@@ -1,6 +1,7 @@
 """BFCL (Berkeley Function-Calling Leaderboard) handler for ProxyBench."""
 
 import os
+from pathlib import Path
 import sys
 
 _HANDLERS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -112,7 +113,10 @@ def _run_bfcl(
     )
 
     os.environ["OPENAI_API_KEY"] = api_key
-    os.environ["OPENAI_BASE_URL"] = base_url.rstrip("/") + "/v1"
+    api_root = base_url.rstrip("/")
+    if not api_root.endswith("/v1"):
+        api_root += "/v1"
+    os.environ["OPENAI_BASE_URL"] = api_root
 
     # Custom/proxied models aren't in BFCL's built-in registry; register so the
     # AST eval checker can resolve the model during scoring.
@@ -124,6 +128,10 @@ def _run_bfcl(
         registry_name="custom-FC",
         is_fc_model=True,
     )
+    # BFCL's stock OpenAI client uses its SDK default timeout, which is shorter
+    # than legitimate long multi-turn DSV4 generations. Preserve the handler and
+    # request payload, but raise only the transport deadline.
+    handler.client = handler.client.with_options(timeout=7200.0)
 
     # Some models reject `temperature` (e.g. reasoning models 400). The handler
     # always puts temperature in the payload, so wrap its API call to drop
@@ -146,10 +154,45 @@ def _run_bfcl(
     )
     entry = next((e for e in all_entries if str(e["id"]) == str(instance_id)), None)
     if entry is None:
+        # PACE selections / standardized CSVs reference BFCL instances by a SHORT
+        # positional id ("<subtask>_<N>" = row N in the flattened data file),
+        # but BFCL's live_* data files use LONG ids (e.g. "live_multiple_0-0-0").
+        # Fall back to a positional lookup so the shipped Pace-Bench selection
+        # scores correctly. Non-live files already use short ids (direct match).
+        short = str(instance_id).rsplit("_", 1)[-1]
+        if short.isdigit():
+            idx = int(short)
+            if 0 <= idx < len(all_entries):
+                entry = all_entries[idx]
+    if entry is None:
         raise ValueError(
             f"Instance id '{instance_id}' not found in test_category '{test_category}'. "
             f"Sample ids: {[e['id'] for e in all_entries[:5]]}"
         )
+
+    # The upstream batch runner injects runtime state before agentic inference.
+    # The single-instance PACE bridge must reproduce those write-path steps.
+    if is_agentic(test_category):
+        from bfcl_eval.utils import (
+            populate_initial_settings_for_memory_test_cases,
+            populate_initial_settings_for_web_search_test_cases,
+        )
+        selected = [entry]
+        selected = populate_initial_settings_for_memory_test_cases(
+            selected, Path("/tmp/bfcl-pace-results")
+        )
+        entry = populate_initial_settings_for_web_search_test_cases(selected)[0]
+
+    actual_entry_id = str(entry["id"])
+
+    def _ground_truth():
+        all_ground_truth = load_ground_truth_entry(test_category)
+        gt_entry = next(
+            (g for g in all_ground_truth
+             if str(g["id"]) in {str(instance_id), actual_entry_id}),
+            None,
+        )
+        return gt_entry["ground_truth"] if gt_entry else []
 
     model_responses, metadata = handler.inference(
         entry, include_input_log=False, exclude_state_log=True
@@ -160,29 +203,17 @@ def _run_bfcl(
             handler, instance_id, model_responses, entry, model_name, test_category
         )
     elif is_multi_turn(test_category):
-        all_ground_truth = load_ground_truth_entry(test_category)
-        gt_entry = next(
-            (g for g in all_ground_truth if str(g["id"]) == str(instance_id)), None
-        )
-        ground_truth = gt_entry["ground_truth"] if gt_entry else []
+        ground_truth = _ground_truth()
         result = _evaluate_single_multi_turn_entry(
             handler, instance_id, model_responses, ground_truth, entry, model_name, test_category
         )
     elif is_agentic(test_category):
-        all_ground_truth = load_ground_truth_entry(test_category)
-        gt_entry = next(
-            (g for g in all_ground_truth if str(g["id"]) == str(instance_id)), None
-        )
-        possible_answer = gt_entry["ground_truth"] if gt_entry else []
+        possible_answer = _ground_truth()
         result = _evaluate_single_agentic_entry(
             handler, instance_id, model_responses, possible_answer, entry, model_name, test_category
         )
     else:
-        all_ground_truth = load_ground_truth_entry(test_category)
-        gt_entry = next(
-            (g for g in all_ground_truth if str(g["id"]) == str(instance_id)), None
-        )
-        possible_answer = gt_entry["ground_truth"] if gt_entry else []
+        possible_answer = _ground_truth()
 
         if is_java(test_category):
             language, return_format = Language.JAVA, ReturnFormat.JAVA

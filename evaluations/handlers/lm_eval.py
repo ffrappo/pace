@@ -89,7 +89,14 @@ def _run_lm_eval(
 
     os.environ["OPENAI_API_KEY"] = api_key
     os.environ["HF_ALLOW_CODE_EVAL"] = "1"
-    chat_completions_url = base_url.rstrip("/") + "/v1/chat/completions"
+    # Accept either an OpenAI API root (ending in /v1) or a server root.
+    # Other PACE handlers pass base_url directly to OpenAI(), which expects /v1,
+    # while lm-eval needs the full chat-completions URL. Normalize once here so
+    # the scorer can use one canonical endpoint for every benchmark.
+    api_root = base_url.rstrip("/")
+    if not api_root.endswith("/v1"):
+        api_root += "/v1"
+    chat_completions_url = api_root + "/chat/completions"
 
     def _evaluate(gen_kwargs):
         return simple_evaluate(
