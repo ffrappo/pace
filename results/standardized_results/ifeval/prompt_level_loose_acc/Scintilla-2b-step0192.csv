@@ -1,0 +1,9 @@
+id,score,metric_name
+399,0.0,prompt_level_loose_acc
+125,0.0,prompt_level_loose_acc
+127,0.0,prompt_level_loose_acc
+168,0.0,prompt_level_loose_acc
+233,1.0,prompt_level_loose_acc
+362,1.0,prompt_level_loose_acc
+375,1.0,prompt_level_loose_acc
+479,1.0,prompt_level_loose_acc

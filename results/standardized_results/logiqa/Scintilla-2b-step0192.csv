@@ -1,0 +1,8 @@
+id,score,metric_name
+29_strict-match,1.0,exact_match
+363_strict-match,0.0,exact_match
+83_strict-match,0.0,exact_match
+255_flexible-extract,0.0,exact_match
+255_strict-match,0.0,exact_match
+62_flexible-extract,1.0,exact_match
+62_strict-match,1.0,exact_match

@@ -1,0 +1,4 @@
+id,score,metric_name
+python3_faulty indexing_decode-the-slanted-ciphertext,0.0,debug_accuracy
+python3_faulty indexing_number-of-ways-of-cutting-a-pizza,0.0,debug_accuracy
+python3_double_frog-position-after-t-seconds,0.0,debug_accuracy

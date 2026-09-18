@@ -1,0 +1,30 @@
+{
+  "schema": "pace.c100-text-full-run-receipt.v1",
+  "model": "Scintilla-2b-step0192",
+  "served_from": "quantization overlay step-0192 via http://127.0.0.1:8788/v1 (watcher 5bd000f37)",
+  "selections": "scripts/pacebench/selections/abs_fit/selections_C100_text.csv",
+  "run_log": "/tmp/pace-c100-full.log",
+  "rows_scored": 215,
+  "skipped_unscorable": { "debugbench": 3 },
+  "errors": { "livecodebench": 1, "bfcl": 1 },
+  "grader_gap": "planbench plan tasks need Linux VAL grader; local llm_correct rows read 0",
+  "benchmark_means_pooled": {
+    "acp_gen": 0.0,
+    "bfcl": 0.04,
+    "ifeval": 0.5484,
+    "lifbench": 0.4486,
+    "livecodebench": 0.75,
+    "logiqa": 0.4286,
+    "planbench": 0.0,
+    "repobench": 9.4854
+  },
+  "agentic_transfer_loocv_prediction": {
+    "gaia": 0.5406,
+    "swebench": 0.6685,
+    "swebench_multimodal": 0.5483,
+    "swtbench": 0.5897,
+    "reliability": "low: predictor LOOCV avg MAE 10.7%, R2 negative; Scintilla is far below the predictor's training model distribution",
+    "actual": null
+  },
+  "verdict": "Mid-tier text capability for a 2B (ifeval/livecodebench/logiqa), weak agentic protocols (bfcl/acp_gen/planbench). Agentic-transfer numbers are extrapolations only."
+}

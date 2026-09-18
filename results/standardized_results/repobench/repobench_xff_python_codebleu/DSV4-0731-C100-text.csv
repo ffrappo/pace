@@ -1,0 +1,7 @@
+id,score,metric_name
+repobench_252,0.4629388485253971,codebleu
+repobench_229,0.6419286129883564,codebleu
+repobench_13,0.125,codebleu
+repobench_105,0.2916666666666667,codebleu
+repobench_158,0.25,codebleu
+repobench_290,0.12268264426848009,codebleu
