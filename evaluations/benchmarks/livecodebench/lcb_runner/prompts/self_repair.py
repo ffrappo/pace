@@ -41,8 +41,13 @@ def get_check_prompt(question: str, result, metadata):
     # assert len(metadata) == 1, f"metadata = {metadata}"
     # metadata = metadata[0]
     metadata = json.loads(metadata)
+    if metadata.get('error_code') == -4 and 'error_message' in metadata and 'error' not in metadata:
+        # The actual code runner emits syntax/testing failures without input fields.
+        return "The above code is incorrect and got a runtime error.\n" + metadata['error_message']
     if "error_code" not in metadata:
         return ""
+    if metadata['error_code'] not in (-1, -2, -3, -4):
+        raise RuntimeError(f"Original self-repair grader failed: {metadata}")
     try:
         if metadata["error_code"] == -1:
             # time limit exceeded
@@ -61,7 +66,8 @@ def get_check_prompt(question: str, result, metadata):
             raise NotImplementedError(
                 f"metadata['error_code'] = {metadata['error_code']} not implemented || {metadata=}"
             )
-    except: return ""
+    except KeyError as error:
+        raise RuntimeError(f"Original self-repair feedback schema missing: {metadata}") from error
     return message
 
 
