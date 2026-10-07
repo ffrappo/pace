@@ -160,6 +160,19 @@ def _run_bfcl(
             f"Sample ids: {[e['id'] for e in all_entries[:5]]}"
         )
 
+    # Generation uses the original language hints; the scorer uses the original
+    # raw typed declaration. The BFCL batch producer and evaluator load these
+    # separately, so keep both instead of conflating their schema contracts.
+    from copy import deepcopy
+    scoring_entry = deepcopy(entry)
+    generation_entries = load_dataset_entry(
+        test_category, include_prereq=False, include_language_specific_hint=True
+    )
+    matches = [item for item in generation_entries if item['id'] == scoring_entry['id']]
+    if len(matches) != 1:
+        raise RuntimeError('Original BFCL generation/scoring identity mismatch')
+    entry = matches[0]
+
     # The upstream batch runner injects runtime state before agentic inference.
     # The single-instance PACE bridge must reproduce those write-path steps.
     prerequisites = []
@@ -172,7 +185,7 @@ def _run_bfcl(
         model_result_dir = Path(results_path) / model_name
         if is_memory(test_category):
             all_with_prereq = load_dataset_entry(
-                test_category, include_prereq=True, include_language_specific_hint=False
+                test_category, include_prereq=True, include_language_specific_hint=True
             )
             by_id = {item['id']: item for item in all_with_prereq}
             prerequisites = [by_id[i] for i in entry['depends_on']]
@@ -212,17 +225,17 @@ def _run_bfcl(
 
     if is_relevance_or_irrelevance(test_category):
         result = _evaluate_single_relevance_entry(
-            handler, instance_id, model_responses, entry, model_name, test_category
+            handler, instance_id, model_responses, scoring_entry, model_name, test_category
         )
     elif is_multi_turn(test_category):
         ground_truth = _ground_truth()
         result = _evaluate_single_multi_turn_entry(
-            handler, instance_id, model_responses, ground_truth, entry, model_name, test_category
+            handler, instance_id, model_responses, ground_truth, scoring_entry, model_name, test_category
         )
     elif is_agentic(test_category):
         possible_answer = _ground_truth()
         result = _evaluate_single_agentic_entry(
-            handler, instance_id, model_responses, possible_answer, entry, model_name, test_category
+            handler, instance_id, model_responses, possible_answer, scoring_entry, model_name, test_category
         )
     else:
         possible_answer = _ground_truth()
@@ -239,7 +252,7 @@ def _run_bfcl(
             instance_id,
             model_responses,
             possible_answer,
-            entry,
+            scoring_entry,
             model_name,
             test_category,
             language=language,
