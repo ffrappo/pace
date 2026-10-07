@@ -83,6 +83,10 @@ def _run_livecodebench(
     from openai import OpenAI
     from evaluations.handlers._compat import chat_completion
     client = OpenAI(api_key=api_key, base_url=base_url)
+    if subtask == 'selfrepair':
+        with _in_lcb_dir():
+            from evaluations.handlers.livecodebench_repair import run_selfrepair
+            return run_selfrepair(problem, idx, model_name, client, messages)
     response = chat_completion(
         client,
         model=model_name,
@@ -119,9 +123,8 @@ def _run_livecodebench(
         elif subtask == "codeexecution":
             pred = extract_execution_code(output, LMStyle.OpenAIChat, cot=True)
             sample = problem.get_evaluation_sample()
-            from lcb_runner.evaluation.utils_execute import BASE_IMPORTS, check_correctness as ce_check
-            code_to_execute = f"{BASE_IMPORTS}\n{sample['code']}\nassert {sample['output']} == {pred}"
-            passed = ce_check(code_to_execute, 3)
+            from lcb_runner.evaluation.compute_code_execution_metrics import evaluate_score
+            passed = evaluate_score(([pred], (sample['code'], sample['input'], sample['output'])))[0]
             result = problem.insert_output_evaluation([output], [pred], [bool(passed)])
 
     result["instance_id"] = idx
