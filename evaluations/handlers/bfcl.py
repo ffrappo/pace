@@ -131,23 +131,10 @@ def _run_bfcl(
     # BFCL's stock OpenAI client uses its SDK default timeout, which is shorter
     # than legitimate long multi-turn DSV4 generations. Preserve the handler and
     # request payload, but raise only the transport deadline.
-    handler.client = handler.client.with_options(timeout=7200.0)
-
-    # Some models reject `temperature` (e.g. reasoning models 400). The handler
-    # always puts temperature in the payload, so wrap its API call to drop
-    # temperature and retry once when the model rejects it.
-    _orig_generate = handler.generate_with_backoff
-
-    def _generate_no_temp_fallback(**kwargs):
-        try:
-            return _orig_generate(**kwargs)
-        except Exception as exc:
-            if "temperature" in kwargs and "temperature" in str(exc).lower():
-                kwargs.pop("temperature", None)
-                return _orig_generate(**kwargs)
-            raise
-
-    handler.generate_with_backoff = _generate_no_temp_fallback
+    handler.client = handler.client.with_options(timeout=7200.0, max_retries=0)
+    # One actual model generation. Preserve the owning handler's response timing,
+    # but bypass its rate-limit reruns, not the evaluator or task contract.
+    handler.generate_with_backoff = handler.generate_with_backoff.__wrapped__.__get__(handler)
 
     all_entries = load_dataset_entry(
         test_category, include_prereq=False, include_language_specific_hint=False
@@ -178,8 +165,11 @@ def _run_bfcl(
             populate_initial_settings_for_web_search_test_cases,
         )
         selected = [entry]
+        results_path = os.environ.get('PACE_BFCL_RESULTS_ROOT')
+        if not results_path or not Path(results_path).is_absolute():
+            raise RuntimeError('PACE_BFCL_RESULTS_ROOT must be an absolute owned artifact directory')
         selected = populate_initial_settings_for_memory_test_cases(
-            selected, Path("/tmp/bfcl-pace-results")
+            selected, Path(results_path) / model_name
         )
         entry = populate_initial_settings_for_web_search_test_cases(selected)[0]
 
