@@ -164,6 +164,8 @@ def _run_bfcl(
             populate_initial_settings_for_memory_test_cases,
             populate_initial_settings_for_web_search_test_cases,
         )
+        if 'web_search' in test_category and not os.environ.get('SERPAPI_API_KEY'):
+            raise RuntimeError('Original BFCL WebSearchAPI requires missing SERPAPI_API_KEY; no model inference started')
         selected = [entry]
         results_path = os.environ.get('PACE_BFCL_RESULTS_ROOT')
         if not results_path or not Path(results_path).is_absolute():
