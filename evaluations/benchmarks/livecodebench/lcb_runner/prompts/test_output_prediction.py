@@ -1,6 +1,8 @@
 import json
 
-from anthropic import HUMAN_PROMPT, AI_PROMPT
+# Exact legacy Anthropic completion literals; independent of SDK import surface.
+HUMAN_PROMPT = "\n\nHuman:"
+AI_PROMPT = "\n\nAssistant:"
 
 from lcb_runner.lm_styles import LMStyle
 from lcb_runner.benchmarks import TestOutputPredictionProblem
