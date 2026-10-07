@@ -461,31 +461,24 @@ class TemplateAPI(TemplateLM):
     ) -> Optional[dict]:
         # !!! Copy: shared dict for each request, need new object !!!
         gen_kwargs = copy.deepcopy(gen_kwargs)
-        try:
-            response = requests.post(
-                self.base_url,
-                json=self._create_payload(
-                    self.create_message(messages),
-                    generate=generate,
-                    gen_kwargs=gen_kwargs,
-                    seed=self._seed,
-                    eos=self.eos_string,
-                    **kwargs,
-                ),
-                headers=self.header,
-                verify=self.verify_certificate,
-            )
-            if not response.ok:
-                eval_logger.warning(
-                    f"API request failed with error message: {response.text}. Retrying..."
-                )
-            response.raise_for_status()
-            return response.json()
-        except RetryError:
-            eval_logger.error(
-                "API request failed after multiple retries. Please check the API status."
-            )
-            return None
+        response = requests.post(
+            self.base_url,
+            json=self._create_payload(
+                self.create_message(messages),
+                generate=generate,
+                gen_kwargs=gen_kwargs,
+                seed=self._seed,
+                eos=self.eos_string,
+                **kwargs,
+            ),
+            headers=self.header,
+            verify=self.verify_certificate,
+            timeout=self.timeout,
+        )
+        if not response.ok:
+            eval_logger.error(f"API request failed: {response.text}")
+        response.raise_for_status()
+        return response.json()
 
     async def amodel_call(
         self,
@@ -497,10 +490,8 @@ class TemplateAPI(TemplateLM):
         cache_keys: list = None,
         ctxlens: Optional[List[int]] = None,
         gen_kwargs: Optional[Dict] = None,
-        _null_retry_count: int = 0,
         **kwargs,
     ) -> Union[List[str], List[Tuple[float, bool]], None]:
-        MAX_NULL_CONTENT_RETRIES = 3
         # !!! Copy: shared dict for each request, need new object !!!
         gen_kwargs = copy.deepcopy(gen_kwargs)
         payload = self._create_payload(
@@ -538,29 +529,9 @@ class TemplateAPI(TemplateLM):
                     ctxlens=ctxlens,
                 )
             )
-            # Retry if API returned null/empty content (up to MAX_NULL_CONTENT_RETRIES times)
-            if generate and answers and all(a is None or a == "" for a in answers):
-                if _null_retry_count < MAX_NULL_CONTENT_RETRIES:
-                    eval_logger.warning(
-                        f"API returned null/empty content. Retrying ({_null_retry_count + 1}/{MAX_NULL_CONTENT_RETRIES})..."
-                    )
-                    sem.release()
-                    acquired = False
-                    return await self.amodel_call(
-                        session=session,
-                        sem=sem,
-                        messages=messages,
-                        generate=generate,
-                        cache_keys=cache_keys,
-                        ctxlens=ctxlens,
-                        gen_kwargs=gen_kwargs,
-                        _null_retry_count=_null_retry_count + 1,
-                        **kwargs,
-                    )
-                else:
-                    eval_logger.warning(
-                        f"API returned null/empty content after {MAX_NULL_CONTENT_RETRIES} retries. Giving up."
-                    )
+            # Empty completed content is an authentic answer, never a rerun.
+            if answers is None or any(a is None for a in answers):
+                raise RuntimeError("API generation returned null instead of a valid response")
             if cache_keys:
                 for res, cache in zip(answers, cache_keys):
                     # Only cache non-empty responses to avoid persisting failures
@@ -569,8 +540,8 @@ class TemplateAPI(TemplateLM):
             return answers
         # If the retries also fail
         except BaseException as e:
-            eval_logger.error(f"Exception:{repr(e)}, retrying.")
-            raise e
+            eval_logger.error(f"API call failed:{repr(e)}")
+            raise
         finally:
             if acquired:
                 sem.release()
@@ -613,25 +584,9 @@ class TemplateAPI(TemplateLM):
         async with ClientSession(
             connector=conn, timeout=ClientTimeout(total=self.timeout)
         ) as session:
-            retry_: Callable[..., Awaitable[Any]] = retry(
-                stop=stop_after_attempt(self.max_retries),
-                wait=wait_exponential(multiplier=1, min=1, max=10),
-                reraise=True,
-                before_sleep=lambda retry_state: eval_logger.info(
-                    f"Retry attempt {retry_state.attempt_number}"
-                ),
-            )(self.amodel_call)
-
-            # Wrap each call to catch exceptions per-request, so one failed
-            # request (e.g. content filter 400) doesn't poison the entire batch
+            # Original model-call failures propagate across the owning batch.
             async def safe_call(**call_kwargs):
-                try:
-                    return await retry_(**call_kwargs)
-                except Exception as e:
-                    eval_logger.warning(
-                        f"Async task failed after retries: {e}. Returning empty response."
-                    )
-                    return [""]
+                return await self.amodel_call(**call_kwargs)
 
             # Create tasks for each batch of request
             tasks = [
@@ -792,41 +747,16 @@ class TemplateAPI(TemplateLM):
                         )
 
                 req = encodings_list if self.tokenized_requests else contexts
-                MAX_NULL_CONTENT_RETRIES = 3
-                for _null_retry_count in range(MAX_NULL_CONTENT_RETRIES + 1):
-                    try:
-                        outputs = retry(
-                            stop=stop_after_attempt(self.max_retries),
-                            wait=wait_exponential(multiplier=1, min=1, max=10),
-                            reraise=True,
-                        )(self.model_call)(
-                            messages=req,
-                            generate=True,
-                            gen_kwargs=copy.deepcopy(all_gen_kwargs[0]),
-                        )
-                    except Exception as e:
-                        eval_logger.warning(
-                            f"API request failed after {self.max_retries} retries: {e}. "
-                            "Storing empty response and continuing to next example."
-                        )
-                        parsed_results = [""] * len(contexts)
-                        break
-                    parsed_results = self.parse_generations(
-                        outputs=outputs,
-                        contexts=contexts,
-                    )
-                    # Retry if all results are null/empty
-                    if all(r is None or r == "" for r in parsed_results):
-                        if _null_retry_count < MAX_NULL_CONTENT_RETRIES:
-                            eval_logger.warning(
-                                f"API returned null/empty content. Retrying ({_null_retry_count + 1}/{MAX_NULL_CONTENT_RETRIES})..."
-                            )
-                            continue
-                        else:
-                            eval_logger.warning(
-                                f"API returned null/empty content after {MAX_NULL_CONTENT_RETRIES} retries. Giving up."
-                            )
-                    break
+                # One authentic generation. HTTP or parse failures propagate;
+                # an empty completed answer remains the model's actual result.
+                outputs = self.model_call(
+                    messages=req,
+                    generate=True,
+                    gen_kwargs=copy.deepcopy(all_gen_kwargs[0]),
+                )
+                parsed_results = self.parse_generations(outputs=outputs, contexts=contexts)
+                if len(parsed_results) != len(contexts) or any(r is None for r in parsed_results):
+                    raise RuntimeError("API generation response shape invalid")
                 for generated_text, context in zip(parsed_results, contexts):
                     # Always append to res to maintain the correct number of items
                     # even if generation failed (generated_text is None)

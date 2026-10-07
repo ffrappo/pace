@@ -118,16 +118,26 @@ def extract(benchmark, subdir, result):
             if f"{mk}_normalized" in r:
                 return (mk, _num(r[f"{mk}_normalized"]))
         return None
-    if b == "livecodebench":
-        return ("pass@1", _num(r.get("pass@1", r.get("pass_at_1", 0.0))))
+    if b == 'livecodebench':
+        value = r.get('pass@1', r.get('pass_at_1'))
+        if value is None:
+            raise RuntimeError('Authentic LiveCodeBench pass@1 missing')
+        return ('pass@1', _num(value))
     if b == "bfcl":
         return ("accuracy", _num(r.get("valid")))
-    if b == "lifbench":
-        return ("total_score", _num((r.get("score_dict") or {}).get("total_score", 0.0)))
-    if b == "logiqa":
-        return ("exact_match", _num(r.get("exact_match", 0.0)))
-    if b == "acp_gen":
-        return ("score", _num(r.get("score", 0.0)))
+    if b == 'lifbench':
+        value = (r.get('score_dict') or {}).get('total_score')
+        if value is None:
+            raise RuntimeError('Authentic LIFBench total_score missing')
+        return ('total_score', _num(value))
+    if b == 'logiqa':
+        if r.get('exact_match') is None:
+            raise RuntimeError('Authentic LogiQA exact_match missing')
+        return ('exact_match', _num(r['exact_match']))
+    if b == 'acp_gen':
+        if r.get('score') is None:
+            raise RuntimeError('Authentic ACP score missing')
+        return ('score', _num(r['score']))
     if b in ("aime25", "gpqa", "mmlu_cot"):
         return ("exact_match", _num(r.get("exact_match", 0.0)))
     if b == "humaneval_chat":
@@ -141,7 +151,10 @@ def extract(benchmark, subdir, result):
     if b == "repobench":
         for metric in ("codebleu", "edit_similarity", "exact_match"):
             if subdir.endswith("_" + metric):
-                return (metric, _num(r.get(metric, 0.0)))
+                value = r.get(metric)
+                if value is None:
+                    raise RuntimeError(f'Authentic RepoBench {metric} missing')
+                return (metric, _num(value))
         return None
     if b == "ifeval":
         v = r.get(subdir)

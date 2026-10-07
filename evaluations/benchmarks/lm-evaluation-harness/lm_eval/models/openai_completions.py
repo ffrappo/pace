@@ -231,25 +231,17 @@ class LocalChatCompletion(LocalCompletionsAPI):
                             f"Message keys: {list(choices['message'].keys())}. "
                             f"Full message: {choices['message']}"
                         )
-                    # For reasoning models, try reasoning_content or reasoning if content is null/empty
-                    if content is None or content == "":
-                        reasoning_content = choices["message"].get("reasoning_content")
-                        if not reasoning_content:
-                            reasoning_content = choices["message"].get("reasoning")
-                        if reasoning_content:
-                            eval_logger.info("Using reasoning_content/reasoning field instead of content")
-                            content = reasoning_content
+                    # A reasoning-only capped generation has no final answer.
+                    # Preserve the empty final content rather than substitute thought.
+                    if content is None:
+                        raise RuntimeError("Chat completion has no string final content")
                     # Strip inline thinking tokens (e.g. nemotron-nano puts <think>...</think> in content)
                     if content and "</think>" in content:
                         content = content.split("</think>", 1)[1].strip()
                     tmp[choices["index"]] = content if content is not None else ""
             except Exception as e:
-                # account for cases that generation is blocked by content filter,
-                # which is common for Azure OpenAI Service,
-                # not sure if need to account for multiple choices
-                eval_logger.warning(f"Could not parse generations: {e}")
-                eval_logger.warning(f"Raw output: {out}")
-                tmp = [""]
+                eval_logger.error(f"Could not parse actual generations: {e}; raw output: {out}")
+                raise
             res = res + tmp
         return res
 
