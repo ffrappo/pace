@@ -100,6 +100,9 @@ def _run_bfcl(
         is_agentic,
         is_java,
         is_js,
+        is_memory,
+        populate_initial_settings_for_memory_test_cases,
+        populate_initial_settings_for_web_search_test_cases,
     )
     from bfcl_eval.constants.enums import Language, ReturnFormat
     from bfcl_eval.model_handler.api_inference.openai_completion import (
@@ -159,32 +162,49 @@ def _run_bfcl(
 
     # The upstream batch runner injects runtime state before agentic inference.
     # The single-instance PACE bridge must reproduce those write-path steps.
+    prerequisites = []
     if is_agentic(test_category):
-        from bfcl_eval.utils import (
-            populate_initial_settings_for_memory_test_cases,
-            populate_initial_settings_for_web_search_test_cases,
-        )
         if 'web_search' in test_category and not os.environ.get('SERPAPI_API_KEY'):
             raise RuntimeError('Original BFCL WebSearchAPI requires missing SERPAPI_API_KEY; no model inference started')
-        selected = [entry]
         results_path = os.environ.get('PACE_BFCL_RESULTS_ROOT')
         if not results_path or not Path(results_path).is_absolute():
             raise RuntimeError('PACE_BFCL_RESULTS_ROOT must be an absolute owned artifact directory')
+        model_result_dir = Path(results_path) / model_name
+        if is_memory(test_category):
+            all_with_prereq = load_dataset_entry(
+                test_category, include_prereq=True, include_language_specific_hint=False
+            )
+            by_id = {item['id']: item for item in all_with_prereq}
+            prerequisites = [by_id[i] for i in entry['depends_on']]
+            if not prerequisites:
+                raise RuntimeError('Original BFCL memory prerequisite chain missing')
         selected = populate_initial_settings_for_memory_test_cases(
-            selected, Path(results_path) / model_name
+            prerequisites + [entry], model_result_dir
         )
-        entry = populate_initial_settings_for_web_search_test_cases(selected)[0]
+        selected = populate_initial_settings_for_web_search_test_cases(selected)
+        prerequisites, entry = selected[:-1], selected[-1]
 
-    actual_entry_id = str(entry["id"])
+    actual_entry_id = str(entry['id'])
+    ground_truth_entries = load_ground_truth_entry(test_category) if not is_relevance_or_irrelevance(test_category) else []
+    canonical_id = actual_entry_id
+    if is_memory(test_category):
+        canonical_id = actual_entry_id.replace(test_category, 'memory', 1)
+    elif 'web_search' in test_category:
+        canonical_id = actual_entry_id.replace(test_category, 'web_search', 1)
+    ground_truth_entry = next((g for g in ground_truth_entries
+                               if str(g['id']) in {str(instance_id), actual_entry_id, canonical_id}), None)
+    if not is_relevance_or_irrelevance(test_category) and ground_truth_entry is None:
+        raise RuntimeError(f'Original BFCL ground truth missing for {actual_entry_id}')
+    if is_agentic(test_category) and not ground_truth_entry['ground_truth']:
+        raise RuntimeError(f'Original BFCL agentic expected-answer list empty for {actual_entry_id}')
 
     def _ground_truth():
-        all_ground_truth = load_ground_truth_entry(test_category)
-        gt_entry = next(
-            (g for g in all_ground_truth
-             if str(g["id"]) in {str(instance_id), actual_entry_id}),
-            None,
-        )
-        return gt_entry["ground_truth"] if gt_entry else []
+        return ground_truth_entry['ground_truth']
+
+    # Run every authentic earlier conversation through the same target/backend.
+    if prerequisites:
+        from evaluations.handlers.bfcl_memory import run_memory_prerequisites
+        run_memory_prerequisites(handler, prerequisites, model_result_dir, model_name)
 
     model_responses, metadata = handler.inference(
         entry, include_input_log=False, exclude_state_log=True

@@ -60,17 +60,11 @@ class MemoryAPI(ABC):
             # The very first entry of a prerequisite chain should start with a clean state.
             return None
 
-        # For non-first entries we MUST have a snapshot to load from.
-        # But if the first entry got a error during inference, then there will be no snapshot file
+        # An absent continuation is an execution failure, not an empty-memory task.
         if not self.latest_snapshot_file.exists():
-            msg = (
-                "⚠️" * 100
-                + f"\nWarning: Not first memory entry, but no snapshot file found in this path: {self.latest_snapshot_file}. The memory will start empty for {initial_config['test_id']}.\n"
-                + "⚠️" * 100
+            raise RuntimeError(
+                f"Original BFCL memory prerequisite snapshot missing: {self.latest_snapshot_file}"
             )
-            print(msg)
-
-            return None
 
         with open(self.latest_snapshot_file, "r") as f:
             return json.load(f)
