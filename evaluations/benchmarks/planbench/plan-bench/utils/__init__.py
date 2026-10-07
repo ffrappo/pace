@@ -250,12 +250,25 @@ def treat_on(letters_dict, atom):
 
 
 def validate_plan(domain, instance, plan_file):
+    import subprocess
+    from pathlib import Path
+
     val_path = os.getenv("VAL")
-    cmd = f"{val_path}/validate {domain} {instance} {plan_file}"
-    response = os.popen(cmd).read()
-    if 'Problem in domain' in response:
-        raise Exception('Problem in domain: Check PDDL Writer')
-    return True if "Plan valid" in response else False
+    if not val_path:
+        raise RuntimeError("VAL must name the installed original validator directory")
+    validator = Path(val_path) / "validate"
+    if not validator.is_file() or not os.access(validator, os.X_OK):
+        raise RuntimeError(f"Original VAL executable missing: {validator}")
+    result = subprocess.run([str(validator), str(domain), str(instance), str(plan_file)],
+                            capture_output=True, text=True, timeout=60)
+    response = result.stdout + result.stderr
+    if "Problem in domain" in response:
+        raise RuntimeError("Problem in domain: Check PDDL Writer\n" + response)
+    if "Plan valid" in response and result.returncode == 0:
+        return True
+    if "Plan failed" in response or "Plan invalid" in response or "Failed to execute" in response:
+        return False
+    raise RuntimeError(f"Original VAL did not return a plan verdict (exit={result.returncode}):\n{response}")
 
 
 
