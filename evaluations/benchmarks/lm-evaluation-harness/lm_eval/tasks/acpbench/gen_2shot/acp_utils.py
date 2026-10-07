@@ -143,11 +143,8 @@ def is_on_optimal_plan(domain, problem, action, opt):
             file.write(problem.lower())
 
         # Here, we need to keep the temp files live until the end of the function
-        try:
-            P = STRIPS(str(domain_temp.name), str(problem_temp.name))
-        except Exception:
-            # Unsolvable
-            return False
+        # STRIPS construction failures are dependency/data errors, not answers.
+        P = STRIPS(str(domain_temp.name), str(problem_temp.name))
 
         a = P.get_action_or_none(action[1:-1])
         if a is None:
@@ -262,10 +259,8 @@ def is_unsolvable(domain, problem):
             timeout=3,
         )
 
-        if len(plans["planner_error"]) > 0:
-            fl = plans["planner_error"].split("\n")[0]
-            print(f"Planner error: {fl}")
-            return False
+        if plans["planner_error"] or plans["timeout_triggered"]:
+            raise RuntimeError("Actual ACP planner failed: " + json.dumps(plans))
         if plans is None or len(plans["plans"]) == 0:
             return plans["unsolvable"]
         return False
@@ -319,12 +314,8 @@ def get_STRIPS(domain, problem):
         with open(str(problem_temp.name), "w", encoding="utf8") as file:
             file.write(problem.lower())
 
-        try:
-            P = STRIPS(str(domain_temp.name), str(problem_temp.name))
-            return P
-        except Exception as e:
-            print(f"||{e}||")
-            return None
+        # Keep failed grounding visible to the evaluator, never a model zero.
+        return STRIPS(str(domain_temp.name), str(problem_temp.name))
 
 
 def create_tmp_dom_prob_replace_init(P, state, result_domain_file, result_problem_file):
