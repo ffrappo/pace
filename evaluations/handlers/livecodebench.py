@@ -98,13 +98,16 @@ def _run_livecodebench(
             code = extract_code(output, LMStyle.OpenAIChat)
             sample = problem.get_evaluation_sample()
             from lcb_runner.evaluation.compute_code_generation_metrics import check_correctness
-            try:
-                graded, _ = check_correctness(sample, code, timeout=6)
-            except Exception as e:
-                print(f"Warning: check_correctness failed: {e}", file=sys.stderr)
-                graded = []
-            graded_list = [bool(g) for g in graded] if graded else [False]
-            result = problem.insert_output_evaluation([output], [code], graded_list)
+            graded, metadata = check_correctness(sample, code, timeout=6)
+            if not isinstance(graded, list) or not graded:
+                raise RuntimeError('Original LiveCodeBench returned no test cases')
+            # Original pass_k_utils admits a program only if EVERY case is >0.
+            # Negative compilation/runtime codes are failures, never bool(True).
+            from lcb_runner.evaluation.pass_k_utils import extract_instance_results
+            passed = extract_instance_results({0: [graded]})[0][0]
+            result = problem.insert_output_evaluation(
+                [output], [code], [passed], test_case_results=graded, grader_metadata=metadata
+            )
 
         elif subtask == "testoutputprediction":
             pred = extract_test_output_code(output, LMStyle.OpenAIChat)
@@ -118,11 +121,7 @@ def _run_livecodebench(
             sample = problem.get_evaluation_sample()
             from lcb_runner.evaluation.utils_execute import BASE_IMPORTS, check_correctness as ce_check
             code_to_execute = f"{BASE_IMPORTS}\n{sample['code']}\nassert {sample['output']} == {pred}"
-            try:
-                passed = ce_check(code_to_execute, 3)
-            except Exception as e:
-                print(f"Warning: code execution check failed: {e}", file=sys.stderr)
-                passed = False
+            passed = ce_check(code_to_execute, 3)
             result = problem.insert_output_evaluation([output], [pred], [bool(passed)])
 
     result["instance_id"] = idx

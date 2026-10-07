@@ -220,25 +220,30 @@ def _run_planbench(
     result["extracted_llm_plan"] = None
 
     if subtask == "task_3_plan_verification":
-        def _parse_validity(text: str):
-            t = text.lower()
-            if re.search(r'\bthe (above )?plan is (not valid|invalid)\b', t):
-                return False
-            if re.search(r'\bthe (above )?plan is valid\b', t):
-                return True
-            if re.search(r'\binvalid\b', t):
-                return False
-            if re.search(r'\bvalid\b', t):
-                return True
-            return None
-
-        gt_valid = _parse_validity(ground_truth_plan)
-        llm_valid = _parse_validity(llm_raw_response)
-        if gt_valid is not None and llm_valid is not None:
-            result["llm_correct_binary"] = (gt_valid == llm_valid)
-        else:
-            result["llm_correct_binary"] = None
-        result["llm_correct"] = None
+        # Use the original response parser and binary verdict exactly. An answer
+        # with no stated validity is wrong, while malformed ground truth fails.
+        import yaml
+        from response_evaluation import ResponseEvaluator
+        from types import SimpleNamespace
+        with open(_PLANBENCH_CFG) as file:
+            config = yaml.safe_load(file)
+        with tempfile.TemporaryDirectory() as wd:
+            evaluator = SimpleNamespace(data=config, llm_plan_file=os.path.join(wd, 'llm_plan'))
+            from tarski.io import PDDLReader
+            domain_file = os.path.join(wd, 'domain.pddl')
+            with open(domain_file, 'w') as file:
+                file.write(_BLOCKSWORLD_DOMAIN)
+            reader = PDDLReader(raise_on_error=True)
+            reader.parse_domain(domain_file)
+            actions = reader.problem.actions
+            actual = ResponseEvaluator.parse_output(evaluator, actions, llm_raw_response)
+            expected = ResponseEvaluator.parse_output(evaluator, actions, ground_truth_plan)
+        if 'valid' not in expected:
+            raise RuntimeError('Original PlanBench ground-truth validity missing')
+        result['extracted_llm_plan'] = actual
+        result['parsed_ground_truth_plan'] = expected
+        result['llm_correct_binary'] = 'valid' in actual and actual['valid'] == expected['valid']
+        result['llm_correct'] = None
     else:
         correct, extracted, extras = _planbench_grade(
             subtask, query, llm_raw_response, ground_truth_plan
