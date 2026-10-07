@@ -110,16 +110,16 @@ def _planbench_grade(subtask, query, llm_raw_response, ground_truth_plan):
         problem = reader.parse_instance(problem_file)
         try:
             llm_plan, _ = text_to_plan(llm_raw_response, problem.actions, plan_file, data)
-            extracted = llm_plan
-            correct = int(validate_plan(domain_file, problem_file, plan_file))
-            if "optimality" in subtask and correct:
-                actual = sum(1 for ln in llm_plan.split("\n") if len(ln) > 0)
-                optimal = sum(1 for ln in (ground_truth_plan or "").split("\n") if ln.strip())
-                extras = {"actual_cost_of_llm_plan": actual, "optimal_cost": optimal}
-                correct = int(actual == optimal)
-        except Exception:
-            extracted = None
-            correct = 0
+        except (ValueError, KeyError) as error:
+            # Malformed model plan is a score, never a missing-validator verdict.
+            return 0, None, {"plan_parse_error": str(error)}
+        extracted = llm_plan
+        correct = int(validate_plan(domain_file, problem_file, plan_file))
+        if "optimality" in subtask and correct:
+            actual = sum(1 for ln in llm_plan.split("\n") if len(ln) > 0)
+            optimal = sum(1 for ln in (ground_truth_plan or "").split("\n") if ln.strip())
+            extras = {"actual_cost_of_llm_plan": actual, "optimal_cost": optimal}
+            correct = int(actual == optimal)
     return correct, extracted, extras
 
 PLANBENCH_TASKS = (
@@ -152,7 +152,8 @@ def _run_planbench(
 
     Evaluation:
       task_3_plan_verification: binary valid/invalid string match.
-      All other tasks: returns llm_correct=None (requires VAL + Fast Downward).
+      Plan tasks use the original VAL validator; missing or failed validator execution
+      raises explicitly rather than becoming a model score.
     """
     from openai import OpenAI
     from evaluations.handlers._compat import chat_completion
