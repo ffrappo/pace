@@ -1,4 +1,5 @@
 """Synchronous custody of exact PACE journal bytes in one private snapshot object."""
+import gzip
 import hashlib
 import json
 import os
@@ -52,13 +53,19 @@ class JournalCustody:
 
     def _request(self, method, data=None):
         url = self._put_url if method == "PUT" else self._get_url
-        headers = {"Content-Type": self._content_type} if method == "PUT" else {}
+        headers = ({"Content-Type": self._content_type, "Content-Encoding": "gzip"}
+                   if method == "PUT" else {"Accept-Encoding": "gzip"})
         try:
             request = Request(url, data=data, headers=headers, method=method)
             with self._http.open(request, timeout=120) as response:
                 if not 200 <= response.status < 300:
                     raise CustodyError(f"PACE custody {method} HTTP {response.status}")
-                return response.read() if method == "GET" else b""
+                if method == "GET":
+                    if (response.headers.get("Content-Encoding") != "gzip"
+                            or response.headers.get_content_type() != self._content_type):
+                        raise CustodyError("PACE custody GET representation metadata differs")
+                    return response.read()
+                return b""
         except HTTPError as exc:
             status = exc.code
             exc.close()
@@ -74,8 +81,15 @@ class JournalCustody:
                            "sha256": hashlib.sha256(data).hexdigest()}
         payload = (json.dumps({"schema": self.SCHEMA, "files": files}, ensure_ascii=False,
                               allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-        self._request("PUT", payload)
-        actual = self._request("GET")
+        wire = gzip.compress(payload, mtime=0)
+        self._request("PUT", wire)
+        retained_wire = self._request("GET")
+        if retained_wire != wire:
+            raise CustodyError("PACE custody GET compressed byte mismatch")
+        try:
+            actual = gzip.decompress(retained_wire)
+        except (OSError, EOFError) as exc:
+            raise CustodyError(f"PACE custody gzip decode failure ({type(exc).__name__})") from None
         if actual != payload or hashlib.sha256(actual).digest() != hashlib.sha256(payload).digest():
             raise CustodyError("PACE custody GET snapshot byte/digest mismatch")
         snapshot = json.loads(actual)
