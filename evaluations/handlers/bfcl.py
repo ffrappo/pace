@@ -151,6 +151,13 @@ def _run_bfcl(
         handler = OpenAICompletionsHandler(**handler_kwargs)
         handler.client = handler.client.with_options(timeout=86400.0, max_retries=0)
         handler.generate_with_backoff = handler.generate_with_backoff.__wrapped__.__get__(handler)
+        continuation_path = os.environ.get('PACE_BFCL_CONTINUATION')
+        if continuation_path:
+            import json
+            continuation = json.loads(Path(continuation_path).read_text())
+            if continuation['call'] == ['bfcl', subtask, str(instance_id)]:
+                from evaluations.handlers.bfcl_replay import SavedBFCLPrefix
+                handler._pace_continuation = SavedBFCLPrefix(continuation['native_continuation'])
 
     all_entries = load_dataset_entry(
         test_category, include_prereq=False, include_language_specific_hint=False
@@ -273,6 +280,8 @@ def _run_bfcl(
             has_tool_call_tag=False,
         )
 
+    if getattr(handler, '_pace_continuation', None) is not None:
+        handler._pace_continuation.complete()
     if replay_record is not None:
         handler._pace_replay.complete()
         metadata['replay'] = 'saved_transport_only'

@@ -102,6 +102,9 @@ class OpenAICompletionsHandler(BaseHandler):
             retain_transport({"request": request_configuration(kwargs)})
         if getattr(self, "_pace_replay", None) is not None:
             return self._pace_replay.next(kwargs)
+        continuation = getattr(self, '_pace_continuation', None)
+        if continuation is not None and continuation.remaining:
+            return continuation.next(kwargs)
         return self.generate_with_backoff(**kwargs)
 
     def _pre_query_processing_FC(self, inference_data: dict, test_entry: dict) -> dict:
