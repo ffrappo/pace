@@ -25,6 +25,7 @@ openai==2.44.0
 litellm==1.77.3
 tenacity>=8.5.0              # lm_eval API models (lm_eval/models/api_models.py) — unblocks aime25/gpqa/ifeval/logiqa/humaneval_chat/mbpp_chat/mmlu_cot/acp_gen (8 benchmarks)
 datasets==3.6.0
+pyarrow==20.0.0             # Arrow26 requires NumPy2; preserve NumPy1.26 scoring stack
 huggingface-hub==0.35.0
 tiktoken==0.7.0
 tqdm==4.66.3
