@@ -11,6 +11,9 @@ def json_value(value):
     """Preserve authentic NumPy values and native path metadata; unknown types fail."""
     if isinstance(value, Path):
         return str(value)
+    from pydantic import BaseModel
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode='json')
     import numpy as np
     if isinstance(value, np.ndarray):
         return value.tolist()

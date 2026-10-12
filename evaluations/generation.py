@@ -1,5 +1,6 @@
 """Opt-in request settings for the existing PACE producers, never a renderer."""
 import hashlib
+from copy import deepcopy
 import json
 import os
 from contextvars import ContextVar
@@ -37,7 +38,7 @@ def end_transport(token):
 def retain_transport(record):
     records = _TRANSPORT.get()
     if records is not None:
-        records.append(record)
+        records.append(deepcopy(record))
 
 
 @lru_cache(maxsize=8)
