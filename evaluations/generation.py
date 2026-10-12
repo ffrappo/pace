@@ -64,6 +64,8 @@ def _load(path, digest):
     source = config["source"]
     if not source["path"] or len(source["sha256"]) != 64:
         raise ValueError("PACE generation requires source path and SHA256")
+    if config.get("tool_parser") not in (None, "qwen3_coder"):
+        raise ValueError("Unsupported explicit PACE tool parser")
     return config
 
 
@@ -97,7 +99,8 @@ def generation_identity():
             "sha256": os.environ.get(_DIGEST_ENV) or hashlib.sha256(
                 Path(os.environ[_CONFIG_ENV]).read_bytes()).hexdigest(),
             "profile": config["profile"], "source": config["source"],
-            "context_tokens": config["context_tokens"]}
+            "context_tokens": config["context_tokens"],
+            "tool_parser": config.get("tool_parser")}
 
 
 def request_configuration(kwargs, *, sdk=False):
@@ -143,7 +146,10 @@ def record_response(response):
             if choice.get("finish_reason") == "length":
                 raise GenerationFailure("Incomplete PACE generation: finish_reason=length", raw)
             message = choice["message"]
-            if not isinstance(message.get("content"), str) and not message.get("tool_calls"):
+            if message.get("incomplete_reasoning") is True:
+                raise GenerationFailure("Incomplete PACE generation: incomplete_reasoning=true", raw)
+            content = message.get("content")
+            if (not isinstance(content, str) or not content.strip()) and not message.get("tool_calls"):
                 raise GenerationFailure("Explicit PACE generation has no final content or tool calls", raw)
     return response
 

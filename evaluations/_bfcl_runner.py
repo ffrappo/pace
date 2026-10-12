@@ -45,7 +45,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-_KEYS = ("model_name", "base_url", "api_key", "subtask", "instance_id")
+_KEYS = ("model_name", "base_url", "api_key", "subtask", "instance_id",
+         "replay_journal", "generation_config", "migrate_parser_from", "repair_mode")
 
 
 def _parse_inputs() -> dict:
@@ -66,7 +67,10 @@ def _parse_inputs() -> dict:
                 if data.get(k) is not None:
                     params[k] = data[k]
 
-    missing = [k for k in _KEYS if params.get(k) in (None, "")]
+    required = ("generation_config",) if params.get("replay_journal") else _KEYS[:5]
+    if params.get("replay_journal") and params.get("repair_mode") not in (None, "withdraw", "regrade"):
+        raise ValueError("--repair-mode must be withdraw or regrade")
+    missing = [k for k in required if params.get(k) in (None, "")]
     if missing:
         raise ValueError(f"missing required parameter(s): {', '.join(missing)}")
     return params
@@ -80,18 +84,24 @@ def main() -> None:
         params = _parse_inputs()
         # Imported lazily and only after inputs validate: pulls in bfcl_eval, which
         # only resolves correctly under the .bfcl-venv interpreter.
-        from evaluations.handlers.bfcl import _run_bfcl
-
         # Keep stdout clean: route any prints from bfcl_eval / inference to stderr
         # so the only thing on stdout is our final JSON result.
         with contextlib.redirect_stdout(sys.stderr):
-            result = _run_bfcl(
-                model_name=params["model_name"],
-                base_url=params["base_url"],
-                api_key=params["api_key"],
-                subtask=params["subtask"],
-                instance_id=str(params["instance_id"]),
-            )
+            if params.get("replay_journal"):
+                from evaluations.handlers.bfcl_regrade import repair_saved_claims
+                result = repair_saved_claims(params["replay_journal"], params["generation_config"],
+                                             params.get("migrate_parser_from"),
+                                             params.get("repair_mode") or "regrade")
+            else:
+                from evaluations.generation import configure_generation
+                if params.get("generation_config"):
+                    configure_generation(params["generation_config"], params["model_name"])
+                from evaluations.handlers.bfcl import _run_bfcl
+                result = _run_bfcl(
+                    model_name=params["model_name"], base_url=params["base_url"],
+                    api_key=params["api_key"], subtask=params["subtask"],
+                    instance_id=str(params["instance_id"]),
+                )
     except Exception as exc:  # noqa: BLE001 - report every failure as JSON
         import traceback
 

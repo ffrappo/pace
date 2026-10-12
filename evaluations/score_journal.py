@@ -18,44 +18,171 @@ def json_value(value):
     raise TypeError(f"Not JSON serializable: {type(value).__name__}")
 
 
+def record_digest(record):
+    encoded = json.dumps(record, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False, default=json_value)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 class ScoreJournal:
     def __init__(self, directory, model, endpoint, selection, output_label=None, generation=None):
+        binding = {"model": model, "endpoint": endpoint,
+                   "selection_sha256": hashlib.sha256(Path(selection).read_bytes()).hexdigest(),
+                   "output_label": output_label or model, "generation": generation}
+        self._open(directory, binding)
+
+    @classmethod
+    def for_replay(cls, directory, generation, migrate_parser_from=None):
+        root = Path(directory)
+        original = json.loads((root / "binding.json").read_text())
+        journal = cls.__new__(cls)
+        journal._open(directory, None)
+        expected = {**original, "generation": generation}
+        if journal.binding != expected:
+            if migrate_parser_from is None:
+                journal.close()
+                raise RuntimeError("Replay needs explicit --migrate-parser-from for changed generation binding")
+            journal.migrate_parser(expected, migrate_parser_from)
+        return journal
+
+    def _open(self, directory, expected):
         self.root = Path(directory)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.binding = {
-            "model": model, "endpoint": endpoint,
-            "selection_sha256": hashlib.sha256(Path(selection).read_bytes()).hexdigest(),
-            "output_label": output_label or model, "generation": generation,
-        }
-        binding = self.root / "binding.json"
-        if binding.exists():
-            if json.loads(binding.read_text()) != self.binding:
-                raise RuntimeError("PACE resume binding differs from the original run")
+        binding_path = self.root / "binding.json"
+        if binding_path.exists():
+            self.binding = json.loads(binding_path.read_text())
         else:
-            binding.write_text(json.dumps(self.binding, indent=2) + "\n")
-            binding.chmod(0o600)
+            if expected is None:
+                raise RuntimeError("Replay requires an existing journal binding")
+            self.binding = expected
+            binding_path.write_text(json.dumps(self.binding, indent=2) + "\n")
+            binding_path.chmod(0o600)
         self.path = self.root / "observations.jsonl"
-        self.records = {}
+        self.records, self.pending, self.history, self.by_digest = {}, {}, [], {}
         if self.path.exists():
             for line in self.path.read_text().splitlines():
-                record = json.loads(line)
-                if record["status"] == "scored":
-                    key = tuple(record["call"])
-                    if key in self.records:
-                        raise RuntimeError(f"Duplicate PACE observation: {key}")
-                    self.records[key] = record
+                self._apply(json.loads(line))
+        if expected is not None and self.binding != expected:
+            raise RuntimeError("PACE resume binding differs from the original run")
         self.log = self.path.open("a")
         self.path.chmod(0o600)
 
+    def _apply(self, record, validate_only=False):
+        status = record["status"]
+        if status == "binding_migrated":
+            if record["previous_binding"] != self.binding:
+                raise RuntimeError("PACE migration does not bind the previous state")
+            if not validate_only:
+                self.binding = record["binding"]
+        elif status in {"scored", "regraded"}:
+            key = tuple(record["call"])
+            if key in self.records:
+                raise RuntimeError(f"Duplicate active PACE observation: {key}")
+            if status == "regraded":
+                if key not in self.pending or record["supersedes"] != self.pending[key]["supersedes"]:
+                    raise RuntimeError("PACE regrade lacks exact prior withdrawal")
+                if not validate_only:
+                    del self.pending[key]
+            elif key in self.pending:
+                raise RuntimeError("Withdrawn PACE generation requires replay, not regeneration")
+            if not validate_only:
+                self.records[key] = record
+        elif status == "invalidated":
+            key = tuple(record["call"])
+            if key not in self.records or record_digest(self.records[key]) != record["supersedes"]:
+                raise RuntimeError("PACE invalidation does not bind the active claim")
+            if not validate_only:
+                del self.records[key]
+                self.pending[key] = record
+        elif status == "failed" and record.get("terminal"):
+            key = tuple(record["call"])
+            if key in self.records:
+                raise RuntimeError("Terminal PACE failure cannot override an active score")
+            if "supersedes" in record:
+                if key not in self.pending or record["supersedes"] != self.pending[key]["supersedes"]:
+                    raise RuntimeError("Terminal PACE failure lacks prior withdrawal")
+            elif key in self.pending:
+                raise RuntimeError("Repeated terminal failure must bind original observation")
+            if not validate_only:
+                self.pending[key] = record
+        elif status != "failed":
+            raise RuntimeError(f"Unknown PACE journal status: {status}")
+        if not validate_only:
+            self.history.append(record)
+            self.by_digest[record_digest(record)] = record
+
     def append(self, record):
-        self.log.write(json.dumps(record, ensure_ascii=False, allow_nan=False, default=json_value) + "\n")
+        encoded = json.dumps(record, ensure_ascii=False, allow_nan=False, default=json_value)
+        self._apply(record, validate_only=True)
+        self.log.write(encoded + "\n")
         self.log.flush()
         os.fsync(self.log.fileno())
-        if record["status"] == "scored":
-            self.records[tuple(record["call"])] = record
+        self._apply(record)
+
+    def migrate_parser(self, expected, previous_digest):
+        from evaluations.generation import generation_config
+        old, new = self.binding["generation"], expected["generation"]
+        if old["sha256"] != previous_digest or old.get("tool_parser") is not None:
+            raise RuntimeError("Explicit parser migration does not match original generation digest")
+        if new.get("tool_parser") != "qwen3_coder":
+            raise RuntimeError("Only qwen3_coder parser migration is supported")
+        if {k: v for k, v in old.items() if k not in {"sha256", "tool_parser"}} != {
+                k: v for k, v in new.items() if k not in {"sha256", "tool_parser"}}:
+            raise RuntimeError("Parser migration changed original generation provenance")
+        config = dict(generation_config())
+        del config["tool_parser"]
+        prior_bytes = (json.dumps(config, indent=2) + "\n").encode()
+        if hashlib.sha256(prior_bytes).hexdigest() != previous_digest:
+            raise RuntimeError("Parser migration changed more than the tool_parser setting")
+        if {k: v for k, v in expected.items() if k != "generation"} != {
+                k: v for k, v in self.binding.items() if k != "generation"}:
+            raise RuntimeError("Parser migration changed scorer binding")
+        self.append({"status": "binding_migrated", "reason": "Explicit Qwen3 Coder response parser repair",
+                     "previous_binding": self.binding, "binding": expected})
+
+    def invalidate(self, call, reason):
+        key = tuple(call)
+        if key in self.pending:
+            return self.by_digest[self.pending[key]["supersedes"]]
+        original = self.records[key]
+        self.append({"status": "invalidated", "call": list(key), "reason": reason,
+                     "supersedes": record_digest(original)})
+        return original
+
+    def reconcile_scores(self, standardized_root):
+        """Remove only withdrawn claims from this journal's original output label."""
+        import csv
+        groups = {}
+        for record in self.pending.values():
+            if "supersedes" not in record:
+                continue
+            original = self.by_digest[record["supersedes"]]
+            for score in original["scores"]:
+                key = (score["benchmark"], score["subdir"])
+                groups.setdefault(key, set()).add(str(score["instance_id"]))
+        for (benchmark, subdir), ids in groups.items():
+            path = Path(standardized_root) / benchmark
+            if subdir:
+                path /= subdir
+            path /= self.binding["output_label"] + ".csv"
+            if not path.exists():
+                continue
+            with path.open(newline="") as file:
+                reader = csv.DictReader(file)
+                columns, rows = reader.fieldnames, list(reader)
+            with path.open("w", newline="") as file:
+                writer = csv.DictWriter(file, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(row for row in rows if row["id"] not in ids)
 
     def done(self, call):
         return tuple(call) in self.records
+
+    def blocked(self, call):
+        return tuple(call) in self.pending
+
+    def terminal(self, call):
+        return self.pending.get(tuple(call), {}).get("terminal", False)
 
     def close(self):
         self.log.close()

@@ -96,6 +96,12 @@ class OpenAICompletionsHandler(BaseHandler):
         if len(tools) > 0:
             kwargs["tools"] = tools
 
+        self._pace_request_tools = tools
+        from evaluations.generation import generation_config, retain_transport, request_configuration
+        if generation_config() is not None:
+            retain_transport({"request": request_configuration(kwargs)})
+        if getattr(self, "_pace_replay", None) is not None:
+            return self._pace_replay.next(kwargs)
         return self.generate_with_backoff(**kwargs)
 
     def _pre_query_processing_FC(self, inference_data: dict, test_entry: dict) -> dict:
@@ -112,6 +118,11 @@ class OpenAICompletionsHandler(BaseHandler):
         return inference_data
 
     def _parse_query_response_FC(self, api_response: Any) -> dict:
+        from evaluations.generation import generation_config
+        config = generation_config()
+        if config is not None and config.get("tool_parser") == "qwen3_coder":
+            from evaluations.handlers.qwen3_coder import adapt_response
+            api_response = adapt_response(api_response, self._pace_request_tools)
         try:
             model_responses = [
                 {func_call.function.name: func_call.function.arguments}

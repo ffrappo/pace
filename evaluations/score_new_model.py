@@ -297,6 +297,7 @@ def main():
                            out_name, generation) \
         if args.journal_dir is not None else None
     if journal is not None:
+        journal.reconcile_scores(_STD)
         restored = defaultdict(list)
         for record in journal.records.values():
             for score in record['scores']:
@@ -310,6 +311,10 @@ def main():
         b, subdir, iid = row["benchmark"], row["subdir"], row["instance_id"]
         subtask, call_iid = eval_call(b, subdir, iid)
         key = (b, subtask, call_iid)
+        if journal is not None and journal.terminal(key):
+            continue
+        if journal is not None and journal.blocked(key):
+            raise RuntimeError(f"Withdrawn PACE call requires saved replay: {key}")
         if journal.done(key) if journal is not None else already_done(b, subdir, iid):
             continue
         rows_by_key[key].append((b, subdir, iid))
@@ -368,7 +373,9 @@ def main():
             except Exception as failure:
                 if journal is not None:
                     journal.append(dict(status='failed', call=key, elapsed_seconds=elapsed,
-                                        error=str(failure), raw_result=result, raw_transport=transport))
+                                        error=str(failure), raw_result=result, raw_transport=transport,
+                                        terminal=isinstance(failure, GenerationFailure) and any(
+                                            "response" in item for item in transport)))
                     journal.close()
                 for pending in futs:
                     pending.cancel()
@@ -383,6 +390,8 @@ def main():
             written = defaultdict(list)
     if journal is not None:
         journal.close()
+        if any(record.get("terminal") for record in journal.pending.values()):
+            raise RuntimeError("PACE retains terminal generated failures; result remains unqualified")
     print(f"Wrote scores to CSVs under {_STD}/<benchmark>/.../{out_name}.csv")
 
 

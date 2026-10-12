@@ -83,8 +83,9 @@ def _run_bfcl(
     api_key: str,
     subtask: str,
     instance_id: str,
+    replay_record: dict | None = None,
 ) -> list:
-    """Run a single BFCL instance (inference + evaluation)."""
+    """Run original BFCL inference and grading, or consume a saved response only."""
     if subtask not in BFCL_SUBTASK_TO_TEST_CATEGORY:
         raise ValueError(
             f"Subtask '{subtask}' is not supported for bfcl. "
@@ -121,23 +122,35 @@ def _run_bfcl(
         api_root += "/v1"
     os.environ["OPENAI_BASE_URL"] = api_root
 
+    if replay_record is not None:
+        if is_multi_turn(test_category) or is_agentic(test_category):
+            raise ValueError("Saved BFCL replay cannot reconstruct unrecorded multi-step execution")
+        if replay_record['call'] != ['bfcl', subtask, str(instance_id)]:
+            raise ValueError("Saved BFCL observation belongs to another canonical call")
+        from evaluations.generation import generation_config
+        config = generation_config()
+        if config is None or config.get('tool_parser') != 'qwen3_coder':
+            raise ValueError("BFCL replay requires explicit tool_parser=qwen3_coder")
+
     # Custom/proxied models aren't in BFCL's built-in registry; register so the
     # AST eval checker can resolve the model during scoring.
     _ensure_model_registered(model_name)
 
-    handler = OpenAICompletionsHandler(
-        model_name=model_name,
-        temperature=0.001,
-        registry_name="custom-FC",
-        is_fc_model=True,
-    )
-    # BFCL's stock OpenAI client uses its SDK default timeout, which is shorter
-    # than legitimate long multi-turn DSV4 generations. Preserve the handler and
-    # request payload, but raise only the transport deadline.
-    handler.client = handler.client.with_options(timeout=7200.0, max_retries=0)
-    # One actual model generation. Preserve the owning handler's response timing,
-    # but bypass its rate-limit reruns, not the evaluator or task contract.
-    handler.generate_with_backoff = handler.generate_with_backoff.__wrapped__.__get__(handler)
+    handler_kwargs = dict(model_name=model_name, temperature=0.001,
+                          registry_name='custom-FC', is_fc_model=True)
+    if replay_record is not None:
+        from bfcl_eval.model_handler.base_handler import BaseHandler
+        from bfcl_eval.constants.enums import ModelStyle
+        from evaluations.handlers.bfcl_replay import SavedBFCLResponses
+        # Initialize only original handler state. A replay creates no API client.
+        handler = OpenAICompletionsHandler.__new__(OpenAICompletionsHandler)
+        BaseHandler.__init__(handler, **handler_kwargs)
+        handler.model_style = ModelStyle.OPENAI_COMPLETIONS
+        handler._pace_replay = SavedBFCLResponses(replay_record)
+    else:
+        handler = OpenAICompletionsHandler(**handler_kwargs)
+        handler.client = handler.client.with_options(timeout=14400.0, max_retries=0)
+        handler.generate_with_backoff = handler.generate_with_backoff.__wrapped__.__get__(handler)
 
     all_entries = load_dataset_entry(
         test_category, include_prereq=False, include_language_specific_hint=False
@@ -260,6 +273,10 @@ def _run_bfcl(
             has_tool_call_tag=False,
         )
 
+    if replay_record is not None:
+        handler._pace_replay.complete()
+        metadata['replay'] = 'saved_transport_only'
+        result['replay_scoring_entry'] = scoring_entry
     result.setdefault("model_result_raw", model_responses)
     result["metadata"] = metadata
     return [result]
