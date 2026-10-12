@@ -62,6 +62,7 @@ from evaluations.run import run_instance  # noqa: E402
 from evaluations._env import load_env  # noqa: E402
 from evaluations.score_journal import ScoreJournal  # noqa: E402
 from evaluations.journal_custody import CustodyError  # noqa: E402
+from evaluations.handlers.lcb_saved_completion import load_saved_lcb  # noqa: E402
 from evaluations.score_output import flush_scores, flush_journal, preserve_committed_scores  # noqa: E402
 from evaluations.generation import (configure_generation, begin_transport, end_transport,
                                     retain_transport, GenerationFailure)  # noqa: E402
@@ -260,7 +261,9 @@ def main():
     ap.add_argument("--migrate-endpoint-from", help="explicit original URL for endpoint-only journal migration")
     ap.add_argument("--generation-config", default=os.environ.get("PACE_GENERATION_CONFIG"),
                     help="opt-in generation JSON, inherited by BFCL subprocesses")
+    ap.add_argument('--saved-lcb-completion', type=Path, help='exact native receipt for one restored LCB call')
     args = ap.parse_args()
+    saved_lcb = load_saved_lcb(args.saved_lcb_completion)
     if not args.api_key:
         ap.error("set --api-key or export API_KEY")
     out_name = args.model_name_out or args.model
@@ -303,6 +306,8 @@ def main():
             continue
         rows_by_key[key].append((b, subdir, iid))
 
+    if saved_lcb and tuple(saved_lcb['call']) not in rows_by_key:
+        raise ValueError('Saved LCB receipt is not a pending selected canonical call')
     serial_lock = threading.Lock()
 
     def _call(b, subtask, call_iid):
@@ -313,8 +318,8 @@ def main():
                 model=args.model, base_url=args.base_url, api_key=args.api_key,
                 subtask=subtask, instance_id=call_iid)
         return run_instance(model_name=args.model, base_url=args.base_url,
-                            api_key=args.api_key, benchmark=b,
-                            subtask=subtask, instance_id=call_iid)
+                            api_key=args.api_key, benchmark=b, subtask=subtask, instance_id=call_iid,
+                            replay_record=saved_lcb if saved_lcb and saved_lcb['call'] == [b, subtask, call_iid] else None)
 
     def run_one(key):
         b, subtask, call_iid = key
