@@ -53,7 +53,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -61,6 +61,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 from evaluations.run import run_instance  # noqa: E402
 from evaluations._env import load_env  # noqa: E402
 from evaluations.score_journal import ScoreJournal  # noqa: E402
+from evaluations.journal_custody import CustodyError  # noqa: E402
+from evaluations.score_output import flush_scores, flush_journal, preserve_committed_scores  # noqa: E402
 from evaluations.generation import (configure_generation, begin_transport, end_transport,
                                     retain_transport, GenerationFailure)  # noqa: E402
 
@@ -240,6 +242,7 @@ def _run_bfcl_subprocess(model, base_url, api_key, subtask, instance_id):
     return result
 
 
+@preserve_committed_scores(_STD)
 def main():
     load_env()  # populate env from repo-root .env (real env vars still win)
     ap = argparse.ArgumentParser(
@@ -254,6 +257,7 @@ def main():
     ap.add_argument("--workers", type=int, default=8,
                     help="concurrent API calls (default 8; unsafe handlers stay serialized)")
     ap.add_argument("--journal-dir", type=Path, help="durable raw observations and resume binding")
+    ap.add_argument("--migrate-endpoint-from", help="explicit original URL for endpoint-only journal migration")
     ap.add_argument("--generation-config", default=os.environ.get("PACE_GENERATION_CONFIG"),
                     help="opt-in generation JSON, inherited by BFCL subprocesses")
     args = ap.parse_args()
@@ -263,30 +267,16 @@ def main():
     generation = configure_generation(args.generation_config, args.model)
     if generation is not None and args.journal_dir is None:
         ap.error("explicit generation requires --journal-dir for bound raw results and resume")
+    if (os.environ.get("PACE_JOURNAL_CUSTODY") is not None or args.migrate_endpoint_from is not None
+            ) and args.journal_dir is None:
+        ap.error("custody and endpoint migration require --journal-dir")
 
     rows = list(csv.DictReader(open(args.selections)))
     if args.limit:
         rows = rows[:args.limit]
 
     def flush(written):
-        """Merge accumulated triples into the standardized CSVs (dedup by id)."""
-        for (b, subdir), triples in written.items():
-            if not triples:
-                continue
-            out_dir = _STD / b / subdir if subdir else _STD / b
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_csv = out_dir / f"{out_name}.csv"
-            existing = {}
-            if out_csv.exists():
-                for r in csv.DictReader(open(out_csv)):
-                    existing[r["id"]] = (r["score"], r["metric_name"])
-            for iid, score, metric in triples:
-                existing[iid] = (score, metric)
-            with open(out_csv, "w", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["id", "score", "metric_name"])
-                for iid, (score, metric) in existing.items():
-                    w.writerow([iid, score, metric])
+        flush_scores(_STD, out_name, written)
 
     # skip instances already scored in a previous run (resume)
     def already_done(b, subdir, iid):
@@ -294,16 +284,10 @@ def main():
         return out_csv.exists() and str(iid) in _load_existing(out_csv)
 
     journal = ScoreJournal(args.journal_dir, args.model, args.base_url, args.selections,
-                           out_name, generation) \
+                           out_name, generation, args.migrate_endpoint_from) \
         if args.journal_dir is not None else None
     if journal is not None:
-        journal.reconcile_scores(_STD)
-        restored = defaultdict(list)
-        for record in journal.records.values():
-            for score in record['scores']:
-                restored[(score['benchmark'], score['subdir'])].append(
-                    (score['instance_id'], score['score'], score['metric']))
-        flush(restored)
+        flush_journal(_STD, journal)
 
     # Group rows by unique API call (dedup: repobench's metric rows share one call).
     rows_by_key = defaultdict(list)
@@ -343,6 +327,9 @@ def main():
             else:
                 r = _call(b, subtask, call_iid)
             return key, r, None, time.monotonic() - started, end_transport(token)
+        except CustodyError:
+            end_transport(token)
+            raise
         except Exception as e:
             return key, getattr(e, "raw_result", None), e, time.monotonic() - started, end_transport(token)
 
@@ -350,9 +337,11 @@ def main():
     total = len(rows_by_key)
     done = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futs = [pool.submit(run_one, k) for k in rows_by_key]
-        for fut in as_completed(futs):
-            key, result, err, elapsed, transport = fut.result()
+        # No queued model call may start before the prior append's custody GET succeeds.
+        serial = args.workers == 1 or (journal is not None and journal.custody is not None)
+        futs = [] if serial else [pool.submit(run_one, k) for k in rows_by_key]
+        completed = (run_one(k) for k in rows_by_key) if serial else (f.result() for f in as_completed(futs))
+        for key, result, err, elapsed, transport in completed:
             done += 1
             scores = []
             try:
@@ -367,9 +356,8 @@ def main():
                     metric, score = ex
                     scores.append(dict(benchmark=bb, subdir=subdir, instance_id=iid,
                                        metric=metric, score=score))
-                if journal is not None:
-                    journal.append(dict(status='scored', call=key, elapsed_seconds=elapsed,
-                                        scores=scores, raw_result=result, raw_transport=transport))
+            except CustodyError:
+                raise
             except Exception as failure:
                 if journal is not None:
                     journal.append(dict(status='failed', call=key, elapsed_seconds=elapsed,
@@ -381,6 +369,9 @@ def main():
                     pending.cancel()
                 flush(written)
                 raise
+            if journal is not None:
+                journal.append(dict(status='scored', call=key, elapsed_seconds=elapsed,
+                                    scores=scores, raw_result=result, raw_transport=transport))
             for s in scores:
                 written[(s['benchmark'], s['subdir'])].append(
                     (s['instance_id'], s['score'], s['metric']))

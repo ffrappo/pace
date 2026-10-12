@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+from evaluations.journal_custody import CustodyError, JournalCustody
+
 
 def json_value(value):
     """Preserve authentic NumPy values; unsupported types remain errors."""
@@ -25,19 +27,18 @@ def record_digest(record):
 
 
 class ScoreJournal:
-    def __init__(self, directory, model, endpoint, selection, output_label=None, generation=None):
+    def __init__(self, directory, model, endpoint, selection, output_label=None, generation=None,
+                 migrate_endpoint_from=None):
         binding = {"model": model, "endpoint": endpoint,
                    "selection_sha256": hashlib.sha256(Path(selection).read_bytes()).hexdigest(),
                    "output_label": output_label or model, "generation": generation}
-        self._open(directory, binding)
+        self._open(directory, binding, migrate_endpoint_from)
 
     @classmethod
     def for_replay(cls, directory, generation, migrate_parser_from=None):
-        root = Path(directory)
-        original = json.loads((root / "binding.json").read_text())
         journal = cls.__new__(cls)
         journal._open(directory, None)
-        expected = {**original, "generation": generation}
+        expected = {**journal.binding, "generation": generation}
         if journal.binding != expected:
             if migrate_parser_from is None:
                 journal.close()
@@ -45,27 +46,72 @@ class ScoreJournal:
             journal.migrate_parser(expected, migrate_parser_from)
         return journal
 
-    def _open(self, directory, expected):
+    def _open(self, directory, expected, migrate_endpoint_from=None):
         self.root = Path(directory)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         binding_path = self.root / "binding.json"
         if binding_path.exists():
-            self.binding = json.loads(binding_path.read_text())
+            self._binding_bytes = binding_path.read_bytes()
+            self.binding = json.loads(self._binding_bytes)
         else:
-            if expected is None:
-                raise RuntimeError("Replay requires an existing journal binding")
+            if expected is None or migrate_endpoint_from is not None:
+                raise RuntimeError("Replay or endpoint migration requires an existing journal binding")
+            if (self.root / "observations.jsonl").exists():
+                raise RuntimeError("PACE observations require their original journal binding")
             self.binding = expected
-            binding_path.write_text(json.dumps(self.binding, indent=2) + "\n")
+            self._binding_bytes = (json.dumps(self.binding, indent=2) + "\n").encode("utf-8")
+            with binding_path.open("wb") as file:
+                file.write(self._binding_bytes)
+                file.flush()
+                os.fsync(file.fileno())
             binding_path.chmod(0o600)
         self.path = self.root / "observations.jsonl"
         self.records, self.pending, self.history, self.by_digest = {}, {}, [], {}
-        if self.path.exists():
-            for line in self.path.read_text().splitlines():
-                self._apply(json.loads(line))
-        if expected is not None and self.binding != expected:
+        self._observations_bytes = self.path.read_bytes() if self.path.exists() else b""
+        if self._observations_bytes and not self._observations_bytes.endswith(b"\n"):
+            raise RuntimeError("PACE journal has an incomplete final line")
+        for line in self._observations_bytes.splitlines():
+            self._apply(json.loads(line))
+        if migrate_endpoint_from is not None and self.binding["endpoint"] != migrate_endpoint_from:
+            raise RuntimeError("Explicit endpoint migration does not match original endpoint")
+        migrate = expected is not None and self.binding != expected
+        if migrate and (migrate_endpoint_from is None or {
+                k: v for k, v in self.binding.items() if k != "endpoint"} != {
+                k: v for k, v in expected.items() if k != "endpoint"}):
             raise RuntimeError("PACE resume binding differs from the original run")
-        self.log = self.path.open("a")
+        self.log = self.path.open("a", encoding="utf-8", newline="")
+        self.log.flush()
+        os.fsync(self.log.fileno())
         self.path.chmod(0o600)
+        self.custody, self._custody_error = None, None
+        try:
+            self.custody = JournalCustody.from_env()
+            self.sync_custody()
+            if migrate:
+                self.append({"status": "binding_migrated", "reason": "Explicit endpoint migration",
+                             "previous_binding": self.binding, "binding": expected})
+        except CustodyError as exc:
+            exc.journal = self
+            self._custody_error = exc
+            self.close()
+            raise
+
+    def sync_custody(self):
+        if self._custody_error is not None:
+            raise self._custody_error
+        if self.custody is None:
+            return
+        try:
+            if ((self.root / "binding.json").read_bytes() != self._binding_bytes
+                    or self.path.read_bytes() != self._observations_bytes):
+                raise CustodyError("PACE custody local journal bytes changed outside committed state")
+            self.custody.publish(self._binding_bytes, self._observations_bytes)
+        except (CustodyError, OSError) as exc:
+            failure = exc if isinstance(exc, CustodyError) else CustodyError(
+                f"PACE custody local read failure ({type(exc).__name__})")
+            failure.journal = self
+            self._custody_error = failure
+            raise failure from None
 
     def _apply(self, record, validate_only=False):
         status = record["status"]
@@ -112,12 +158,16 @@ class ScoreJournal:
             self.by_digest[record_digest(record)] = record
 
     def append(self, record):
-        encoded = json.dumps(record, ensure_ascii=False, allow_nan=False, default=json_value)
+        if self._custody_error is not None:
+            raise self._custody_error
+        encoded = json.dumps(record, ensure_ascii=False, allow_nan=False, default=json_value) + "\n"
         self._apply(record, validate_only=True)
-        self.log.write(encoded + "\n")
+        self.log.write(encoded)
         self.log.flush()
         os.fsync(self.log.fileno())
         self._apply(record)
+        self._observations_bytes += encoded.encode("utf-8")
+        self.sync_custody()
 
     def migrate_parser(self, expected, previous_digest):
         from evaluations.generation import generation_config

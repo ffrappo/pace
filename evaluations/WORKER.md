@@ -45,6 +45,25 @@ Resume reuses those observations and restores CSVs rather than replaying model
 calls. A model/endpoint/selection mismatch fails. Handler failure or missing
 grade exits nonzero and retains the failure; neither becomes a zero score.
 
+For off-worker custody, set `PACE_JOURNAL_CUSTODY=/root/journal-custody.json`
+(required for the next real run). This private JSON contains only `put_url`,
+`get_url` and `content_type` (`application/json`). Both presigned URLs must name
+one exact R2 object. Startup and every append PUT a snapshot, then GET it and
+verify exact bytes and SHA256 before the next call. Custody-enabled runs and
+`--workers 1` start calls lazily; no next call is queued ahead of that commit.
+Custody errors preserve local committed scores, flush their CSVs and exit nonzero.
+
+Snapshot schema `pace-score-journal-v1` stores `files["binding.json"]` and
+`files["observations.jsonl"]`, each with `text`, `bytes` and `sha256`. Explicit
+manual restoration writes each `text` as UTF-8 after checking its byte length and
+SHA256. There is no automatic remote restore or alternate journal baseline.
+
+After a tunnel expires, use `--base-url <actual-new-endpoint>` together with
+`--migrate-endpoint-from <exact-old-endpoint>`. This appends a `binding_migrated`
+record and publishes it through custody; it never rewrites the original binding
+or observations. Model, selection, output label and complete generation binding
+must remain unchanged. Without the flag, all binding drift is rejected.
+
 ## Interpretation
 
 The full official C100 selection has 412 weighted rows and 385 distinct source
