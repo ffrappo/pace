@@ -84,6 +84,7 @@ def run_instance(
     benchmark: str,
     subtask: str | None = None,
     instance_id: str | int = 0,
+    replay_record: dict | None = None,
 ) -> list:
     """Run a single benchmark instance and return the result as a list of dicts.
 
@@ -181,6 +182,7 @@ def run_instance(
             api_key=api_key,
             subtask=subtask,
             instance_id=str(instance_id),
+            replay_record=replay_record,
         )
 
     if handler == "planbench":

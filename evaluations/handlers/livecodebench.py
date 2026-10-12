@@ -31,6 +31,7 @@ def _run_livecodebench(
     api_key: str,
     subtask: str,
     instance_id: str,
+    replay_record: dict | None = None,
 ) -> list:
     """Run a single LiveCodeBench instance: generate output then evaluate.
 
@@ -81,19 +82,36 @@ def _run_livecodebench(
 
     from openai import OpenAI
     from evaluations.handlers._compat import chat_completion
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    saved = None
+    if replay_record is not None:
+        if replay_record['call'] != ['livecodebench', subtask, str(instance_id)]:
+            raise ValueError('Saved LCB observation belongs to another canonical call')
+        from evaluations.handlers.lcb_saved_completion import SavedNativeCompletion
+        native = replay_record['native_continuation']
+        saved = SavedNativeCompletion(native['journal'], native['journal_digest'],
+                                      native['request_id'])
+        client = None
+    else:
+        client = OpenAI(api_key=api_key, base_url=base_url)
     if subtask == 'selfrepair':
+        if saved is not None:
+            raise ValueError('Saved LCB completion does not support selfrepair replay')
         with _in_lcb_dir():
             from evaluations.handlers.livecodebench_repair import run_selfrepair
             return run_selfrepair(problem, idx, model_name, client, messages)
-    response = chat_completion(
-        client,
-        model=model_name,
-        messages=messages,
-        temperature=0,
-        max_tokens=4096,
-        timeout=300,
-    )
+    if saved is not None:
+        response = saved.next(dict(model=model_name, messages=messages, temperature=0,
+                                   max_tokens=4096, timeout=300))
+        saved.complete()
+    else:
+        response = chat_completion(
+            client,
+            model=model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=4096,
+            timeout=300,
+        )
     output = response.choices[0].message.content or ""
 
     with _in_lcb_dir():
