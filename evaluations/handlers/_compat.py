@@ -56,6 +56,19 @@ def chat_completion(client, *, reasoning_budget_retry=True, **kwargs):
     from evaluations.generation import (generation_config, request_configuration,
                                         record_response, record_error, GenerationFailure)
     if generation_config() is not None:
+        import json
+        import os
+        from pathlib import Path
+        saved = os.environ.pop('PACE_SAVED_NATIVE_COMPLETION', None)
+        if saved is not None:
+            from evaluations.handlers.lcb_saved_completion import SavedNativeCompletion
+            record = json.loads(Path(saved).read_bytes())
+            if set(record) != {'journal', 'journal_digest', 'request_id'}:
+                raise ValueError('Saved native completion requires exact journal identity')
+            native = SavedNativeCompletion(record['journal'], record['journal_digest'], record['request_id'])
+            response = native.next(kwargs)
+            native.complete()
+            return response
         kwargs = request_configuration(kwargs, sdk=True)
         # The explicit contract is one attempt, including transport retries.
         kwargs["timeout"] = 86400
