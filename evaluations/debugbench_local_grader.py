@@ -1,4 +1,4 @@
-"""Run the original DebugBench LeetCodeTester locally; no neural inference or exported cookies."""
+"""Run original credential-using PACE providers locally; no neural inference or exported keys."""
 import argparse
 import csv
 import hashlib
@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--token', type=Path, required=True)
     parser.add_argument('--keys', type=Path, required=True)
+    parser.add_argument('--serpapi-key', type=Path, required=True)
     parser.add_argument('--outputs', type=Path, required=True)
     args = parser.parse_args()
     os.umask(0o077)
@@ -26,6 +27,10 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / 'evaluations/benchmarks/debugbench/evaluation'))
     from leetcode_oj import LeetCodeTester
+    from serpapi import GoogleSearch
+    search_key = args.serpapi_key.read_text().strip()
+    if not search_key:
+        raise ValueError('Original SerpAPI credential is missing')
     rows = csv.DictReader((repo / 'scripts/pacebench/selections/abs_fit/selections_C100_text.csv').open())
     calls = {r['instance_id'] for r in rows if r['benchmark'] == 'debugbench'}
     allowed = {(call.split('_', 1)[0], call.rsplit('_', 1)[1]) for call in calls}
@@ -37,7 +42,7 @@ def main():
             pass
 
         def do_POST(self):
-            if self.path != '/debugbench' or self.headers.get('Authorization') != 'Bearer ' + token:
+            if self.path not in {'/debugbench', '/bfcl-web-search'} or self.headers.get('Authorization') != 'Bearer ' + token:
                 self.send_error(401)
                 return
             try:
@@ -45,6 +50,21 @@ def main():
                 if not 0 < size <= 2 << 20:
                     raise ValueError('Original fixed-code request exceeds allowed size')
                 request = json.loads(self.rfile.read(size))
+                if self.path == '/bfcl-web-search':
+                    if set(request) != {'engine', 'q', 'kl'} or request['engine'] != 'duckduckgo':
+                        raise ValueError('Not an original BFCL DuckDuckGo provider request')
+                    with lock:
+                        result = GoogleSearch({**request, 'api_key': search_key}).get_dict()
+                    body = json.dumps(result, allow_nan=False).encode()
+                    if search_key.encode() in body:
+                        raise RuntimeError('Original provider response contains its credential')
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    print('ORIGINAL_BFCL_SEARCH_COMPLETE', flush=True)
+                    return
                 if set(request) != {'code', 'task_id', 'language'} or (request['language'], request['task_id']) not in allowed:
                     raise ValueError('Request is not an original selected DebugBench call')
                 encoded = json.dumps(request, sort_keys=True).encode()

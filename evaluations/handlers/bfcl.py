@@ -197,8 +197,9 @@ def _run_bfcl(
     # The single-instance PACE bridge must reproduce those write-path steps.
     prerequisites = []
     if is_agentic(test_category):
-        if 'web_search' in test_category and not os.environ.get('SERPAPI_API_KEY'):
-            raise RuntimeError('Original BFCL WebSearchAPI requires missing SERPAPI_API_KEY; no model inference started')
+        if ('web_search' in test_category and not os.environ.get('SERPAPI_API_KEY')
+                and not Path('/root/eugeny-pace/debugbench-grader.token').is_file()):
+            raise RuntimeError('Original BFCL WebSearchAPI requires missing credential or local-provider SSH binding; no model inference started')
         results_path = os.environ.get('PACE_BFCL_RESULTS_ROOT')
         if not results_path or not Path(results_path).is_absolute():
             raise RuntimeError('PACE_BFCL_RESULTS_ROOT must be an absolute owned artifact directory')
