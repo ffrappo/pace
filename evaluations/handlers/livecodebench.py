@@ -60,10 +60,9 @@ def _run_livecodebench(
         # "release_v1" has only ~400 problems, so high indices (e.g. 974) went out
         # of range — the instance ids index into the release_latest ordering.
         if subtask in ("codegeneration", "selfrepair"):
-            from lcb_runner.benchmarks.code_generation import load_code_generation_dataset
+            from lcb_runner.benchmarks.code_generation import load_code_generation_problem
             from lcb_runner.prompts.code_generation import format_prompt_generation
-            dataset = sorted(load_code_generation_dataset("release_latest"), key=lambda x: x.question_id)
-            problem = dataset[idx]
+            problem = load_code_generation_problem(idx, "release_latest")
             messages = format_prompt_generation(problem, LMStyle.OpenAIChat)
 
         elif subtask == "testoutputprediction":

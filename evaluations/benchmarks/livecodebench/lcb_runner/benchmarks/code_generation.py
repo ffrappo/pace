@@ -121,6 +121,26 @@ class CodeGenerationProblem:
         }
 
 
+def load_code_generation_problem(index, release_version="release_latest") -> CodeGenerationProblem:
+    """Load the exact sorted instance without decoding every private test corpus."""
+    if type(index) is not int or index < 0:
+        raise ValueError("LiveCodeBench sorted instance index must be nonnegative")
+    dataset = load_dataset(
+        "livecodebench/code_generation_lite", split="test", version_tag=release_version,
+        trust_remote_code=True, streaming=True,
+    )
+    ordering = sorted((row["question_id"], ordinal) for ordinal, row in enumerate(dataset))
+    if index >= len(ordering):
+        raise IndexError(f"LiveCodeBench index {index} outside {len(ordering)} problems")
+    question_id, ordinal = ordering[index]
+    for position, row in enumerate(dataset):
+        if position == ordinal:
+            if row["question_id"] != question_id:
+                raise RuntimeError("LiveCodeBench source ordering changed during selection")
+            return CodeGenerationProblem(**row)
+    raise RuntimeError("LiveCodeBench selected source row disappeared")
+
+
 def load_code_generation_dataset(release_version="release_v1", start_date=None, end_date=None) -> list[CodeGenerationProblem]:
     dataset = load_dataset("livecodebench/code_generation_lite", split="test", version_tag=release_version, trust_remote_code=True)
     dataset = [CodeGenerationProblem(**p) for p in dataset]  # type: ignore
