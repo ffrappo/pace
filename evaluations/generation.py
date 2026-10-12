@@ -25,6 +25,32 @@ class GenerationFailure(RuntimeError):
         self.raw_result = raw_result
 
 
+def terminal_generation_kind(failure, raw, transport):
+    """Classify retained native responses and the exact fixed-capacity refusal only."""
+    if not isinstance(failure, GenerationFailure) or not isinstance(raw, dict):
+        return None
+    if (any(item.get("response") == raw for item in transport)
+            and not any("error" in item or "status_code" in item for item in [raw, *transport])):
+        return "model_response"
+    config = generation_config()
+    if (config is None or raw.get("type") != "BadRequestError"
+            or raw.get("status_code") != 400 or raw not in transport):
+        return None
+    try:
+        body = json.loads(raw["body"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    expected = {"error": {"message": "Rendered prompt plus budget exceeds context; no clipping"}}
+    requests = [item["request"] for item in transport if "request" in item]
+    if body != expected or not requests:
+        return None
+    request = requests[-1]
+    if (request.get("model") != config["request"]["model"]
+            or request.get("max_tokens") != config["request"]["max_tokens"]):
+        return None
+    return "context_capacity"
+
+
 def begin_transport():
     return _TRANSPORT.set([])
 

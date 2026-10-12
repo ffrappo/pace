@@ -65,7 +65,7 @@ from evaluations.journal_custody import CustodyError  # noqa: E402
 from evaluations.handlers.lcb_saved_completion import load_saved_lcb  # noqa: E402
 from evaluations.score_output import flush_scores, flush_journal, preserve_committed_scores  # noqa: E402
 from evaluations.generation import (configure_generation, begin_transport, end_transport,
-                                    retain_transport, GenerationFailure)  # noqa: E402
+                                    retain_transport, GenerationFailure, terminal_generation_kind)  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 _STD = _REPO / "results" / "standardized_results"
@@ -365,13 +365,12 @@ def main():
             except CustodyError:
                 raise
             except Exception as failure:
-                terminal = isinstance(failure, GenerationFailure) and isinstance(result, dict) and any(
-                    item.get("response") == result for item in transport) and not any(
-                    "error" in item or "status_code" in item for item in [result, *transport])
+                kind = terminal_generation_kind(failure, result, transport)
+                terminal = kind is not None
                 if journal is not None:
                     journal.append(dict(status='failed', call=key, elapsed_seconds=elapsed,
                                         error=str(failure), raw_result=result, raw_transport=transport,
-                                        terminal=terminal))
+                                        terminal=terminal, failure_kind=kind))
                 print(f"[{done}/{total}] {key} FAILED: {failure}", file=sys.stderr, flush=True)
                 if terminal:
                     failed.add(key)
@@ -392,7 +391,7 @@ def main():
             written = defaultdict(list)
     if journal is not None: journal.close()
     if failed:
-        raise RuntimeError(f"PACE retains {len(failed)} terminal generated failures; result remains unqualified")
+        raise RuntimeError(f"PACE retains {len(failed)} terminal response/capability failures; result remains unqualified")
     print(f"Wrote scores to CSVs under {_STD}/<benchmark>/.../{out_name}.csv")
 
 
