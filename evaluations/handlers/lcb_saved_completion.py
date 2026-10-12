@@ -47,7 +47,31 @@ class SavedNativeCompletion:
             raise ValueError('Native continuation file belongs to another request')
         if response['id'] != canonical_request_id or response['model'] != origin['request']['model']:
             raise ValueError('Native completion belongs to another request or model')
-        self.prompt = origin['prompt_tokens']
+        self.prompt, self.profile = origin['prompt_tokens'], origin['profile']
+        retired, last_accounting = [], None
+        for row in rows[1:-1]:
+            reply = row['reply']
+            if row['event'] == 'native_init' and not retired:
+                retired.append(reply['anchor'])
+            elif row['event'] == 'native_step' and retired:
+                if reply['emitted'] != [reply['anchor']]:
+                    raise ValueError('Native continuation requires ordinary one-token retired steps')
+                retired += reply['emitted']
+            else:
+                raise ValueError('Native continuation journal event ordering differs')
+            last_accounting = reply['accounting']
+            if (last_accounting['prompt_tokens'] != len(self.prompt)
+                    or last_accounting['generated_tokens'] != len(retired)
+                    or last_accounting['target_draws'] != len(retired)
+                    or last_accounting['committed_length'] != len(self.prompt) + len(retired) - 1):
+                raise ValueError('Native continuation retired step accounting differs')
+        if not retired or response['eugeny']['output_tokens'] != retired:
+            raise ValueError('Native completion output differs from actual retired journal IDs')
+        final_accounting = response['eugeny']['accounting']
+        for key in ('schema', 'capacity', 'prompt_tokens', 'generated_tokens', 'target_draws',
+                    'committed_length', 'max_new_tokens', 'output', 'stop'):
+            if final_accounting[key] != last_accounting[key]:
+                raise ValueError('Native completion accounting differs from last retired step')
         self.request, self.response = origin['request'], deepcopy(response)
         self.provenance = {'path': str(path), 'blake3': source_digest,
                            'request_id': canonical_request_id, 'mode': 'saved_native_completion'}
@@ -57,8 +81,8 @@ class SavedNativeCompletion:
         if self.consumed:
             raise RuntimeError('Saved native completion already consumed; network unavailable')
         config = generation_config()
-        if config is None:
-            raise ValueError('Saved native completion requires explicit generation profile')
+        if config is None or self.profile != config['profile']:
+            raise ValueError('Saved native completion requires matching explicit generation profile')
         request = request_configuration(kwargs)
         request.pop('timeout', None)  # Client read timeout is not an outgoing native field.
         if request != self.request:
