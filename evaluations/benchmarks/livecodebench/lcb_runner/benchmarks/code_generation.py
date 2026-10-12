@@ -122,22 +122,36 @@ class CodeGenerationProblem:
 
 
 def load_code_generation_problem(index, release_version="release_latest") -> CodeGenerationProblem:
-    """Load the exact sorted instance without decoding every private test corpus."""
+    """Read the same source JSON rows, decoding private tests only for the selected row."""
+    from huggingface_hub import hf_hub_download
     if type(index) is not int or index < 0:
         raise ValueError("LiveCodeBench sorted instance index must be nonnegative")
-    dataset = load_dataset(
-        "livecodebench/code_generation_lite", split="test", version_tag=release_version,
-        trust_remote_code=True, streaming=True,
-    )
-    ordering = sorted((row["question_id"], ordinal) for ordinal, row in enumerate(dataset))
+    if release_version != "release_latest":
+        raise ValueError("Selected PACE problem loader binds release_latest")
+    revision = "0fe84c3912ea0c4d4a78037083943e8f0c4dd505"
+    paths = [hf_hub_download("livecodebench/code_generation_lite", filename,
+             repo_type="dataset", revision=revision)
+             for filename in ("test.jsonl", "test2.jsonl", "test3.jsonl",
+                              "test4.jsonl", "test5.jsonl", "test6.jsonl")]
+    ordering = []
+    for path in paths:
+        with open(path) as file:
+            for line in file:
+                ordering.append((json.loads(line)["question_id"], len(ordering)))
+    ordering.sort()
     if index >= len(ordering):
         raise IndexError(f"LiveCodeBench index {index} outside {len(ordering)} problems")
-    question_id, ordinal = ordering[index]
-    for position, row in enumerate(dataset):
-        if position == ordinal:
-            if row["question_id"] != question_id:
-                raise RuntimeError("LiveCodeBench source ordering changed during selection")
-            return CodeGenerationProblem(**row)
+    question_id, wanted = ordering[index]
+    ordinal = 0
+    for path in paths:
+        with open(path) as file:
+            for line in file:
+                if ordinal == wanted:
+                    row = json.loads(line)
+                    if row["question_id"] != question_id:
+                        raise RuntimeError("LiveCodeBench source ordering changed during selection")
+                    return CodeGenerationProblem(**row)
+                ordinal += 1
     raise RuntimeError("LiveCodeBench selected source row disappeared")
 
 
