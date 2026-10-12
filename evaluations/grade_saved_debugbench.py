@@ -1,4 +1,5 @@
 """Grade the original saved DebugBench output after its credential-locality failure."""
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ def main():
     prior = records[-1]
     if prior['status'] != 'failed' or prior['call'][0] != 'debugbench' or prior.get('terminal'):
         raise RuntimeError('Saved original DebugBench grading failure is not pending')
-    raw = prior['raw_result']
+    raw = deepcopy(prior['raw_result'])
     if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0]['fixed_code'], str):
         raise RuntimeError('Original DebugBench fixed code missing; no regeneration permitted')
     result = raw[0]
