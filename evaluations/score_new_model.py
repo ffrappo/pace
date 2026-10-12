@@ -294,11 +294,13 @@ def main():
 
     # Group rows by unique API call (dedup: repobench's metric rows share one call).
     rows_by_key = defaultdict(list)
+    failed = set()
     for row in rows:
         b, subdir, iid = row["benchmark"], row["subdir"], row["instance_id"]
         subtask, call_iid = eval_call(b, subdir, iid)
         key = (b, subtask, call_iid)
         if journal is not None and journal.terminal(key):
+            failed.add(key)
             continue
         if journal is not None and journal.blocked(key):
             raise RuntimeError(f"Withdrawn PACE call requires saved replay: {key}")
@@ -337,7 +339,6 @@ def main():
             raise
         except Exception as e:
             return key, getattr(e, "raw_result", None), e, time.monotonic() - started, end_transport(token)
-
     written = defaultdict(list)   # (benchmark, subdir) -> [(id, score, metric)]
     total = len(rows_by_key)
     done = 0
@@ -364,14 +365,19 @@ def main():
             except CustodyError:
                 raise
             except Exception as failure:
+                terminal = isinstance(failure, GenerationFailure) and isinstance(result, dict) and any(
+                    item.get("response") == result for item in transport) and not any(
+                    "error" in item or "status_code" in item for item in [result, *transport])
                 if journal is not None:
                     journal.append(dict(status='failed', call=key, elapsed_seconds=elapsed,
                                         error=str(failure), raw_result=result, raw_transport=transport,
-                                        terminal=isinstance(failure, GenerationFailure) and any(
-                                            "response" in item for item in transport)))
-                    journal.close()
-                for pending in futs:
-                    pending.cancel()
+                                        terminal=terminal))
+                print(f"[{done}/{total}] {key} FAILED: {failure}", file=sys.stderr, flush=True)
+                if terminal:
+                    failed.add(key)
+                    continue
+                if journal is not None: journal.close()
+                for pending in futs: pending.cancel()
                 flush(written)
                 raise
             if journal is not None:
@@ -384,10 +390,9 @@ def main():
                       f"{s['metric']}={s['score']}", flush=True)
             flush(written)
             written = defaultdict(list)
-    if journal is not None:
-        journal.close()
-        if any(record.get("terminal") for record in journal.pending.values()):
-            raise RuntimeError("PACE retains terminal generated failures; result remains unqualified")
+    if journal is not None: journal.close()
+    if failed:
+        raise RuntimeError(f"PACE retains {len(failed)} terminal generated failures; result remains unqualified")
     print(f"Wrote scores to CSVs under {_STD}/<benchmark>/.../{out_name}.csv")
 
 
