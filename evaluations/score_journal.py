@@ -8,7 +8,9 @@ from evaluations.journal_custody import CustodyError, JournalCustody
 
 
 def json_value(value):
-    """Preserve authentic NumPy values; unsupported types remain errors."""
+    """Preserve authentic NumPy values and native path metadata; unknown types fail."""
+    if isinstance(value, Path):
+        return str(value)
     import numpy as np
     if isinstance(value, np.ndarray):
         return value.tolist()
