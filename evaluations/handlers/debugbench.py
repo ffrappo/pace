@@ -12,6 +12,8 @@ DEBUGBENCH_DIR = os.path.join(BENCHMARKS_DIR, "debugbench")
 DEBUGBENCH_BENCHMARK_DIR = os.path.join(DEBUGBENCH_DIR, "benchmark")
 DEBUGBENCH_EVAL_DIR = os.path.join(DEBUGBENCH_DIR, "evaluation")
 DEBUGBENCH_KEYS_FILE = os.path.join(DEBUGBENCH_EVAL_DIR, "keys.json")
+_LOCAL_GRADER_URL = 'http://127.0.0.1:8771/debugbench'
+_LOCAL_GRADER_TOKEN = '/root/eugeny-pace/debugbench-grader.token'
 
 
 def _run_debugbench(
@@ -82,12 +84,15 @@ def _run_debugbench(
     result["test_result_dict"] = None
 
     grader_url = os.environ.get('PACE_DEBUGBENCH_GRADER_URL')
+    if grader_url is None and os.path.isfile(_LOCAL_GRADER_TOKEN):
+        grader_url = _LOCAL_GRADER_URL
     if grader_url:
         import pathlib
         import urllib.request
-        if grader_url != 'http://127.0.0.1:8771/debugbench':
+        if grader_url != _LOCAL_GRADER_URL:
             raise ValueError('Original local grader must be SSH-bound loopback')
-        token = pathlib.Path(os.environ['PACE_DEBUGBENCH_GRADER_TOKEN']).read_text().strip()
+        token_path = os.environ.get('PACE_DEBUGBENCH_GRADER_TOKEN') or _LOCAL_GRADER_TOKEN
+        token = pathlib.Path(token_path).read_text().strip()
         request = {'code': fixed_code, 'language': lang, 'task_id': slug}
         query = urllib.request.Request(grader_url, data=json.dumps(request).encode(),
                                        headers={'Content-Type': 'application/json',
