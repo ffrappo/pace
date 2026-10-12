@@ -69,7 +69,12 @@ class OpenAICompletionsHandler(BaseHandler):
     @retry_with_backoff(error_type=RateLimitError)
     def generate_with_backoff(self, **kwargs):
         start_time = time.time()
-        api_response = self.client.chat.completions.create(**kwargs)
+        from evaluations.generation import generation_config
+        if generation_config() is not None:
+            from evaluations.handlers._compat import chat_completion
+            api_response = chat_completion(self.client, **kwargs)
+        else:
+            api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
 
         return api_response, end_time - start_time
@@ -183,6 +188,13 @@ class OpenAICompletionsHandler(BaseHandler):
         # Original assistant message object (contains `reasoning_content` on DeepSeek).
         message = api_response.choices[0].message
 
+        from evaluations.generation import generation_config
+        config = generation_config()
+        if config is not None and config["template_flags"].get("preserve_thinking"):
+            if hasattr(message, "reasoning_content"):
+                response_data["reasoning_content"] = message.reasoning_content
+            return
+
         # Preserve tool_call information but strip the unsupported `reasoning_content` field before inserting into chat history.
         if getattr(message, "tool_calls", None):
             assistant_message = {
@@ -288,8 +300,12 @@ class OpenAICompletionsHandler(BaseHandler):
         but does not include it in the chat history.
         """
         message = api_response.choices[0].message
+        from evaluations.generation import generation_config
+        config = generation_config()
         if hasattr(message, "reasoning_content"):
             response_data["reasoning_content"] = message.reasoning_content
+            if config is not None and config["template_flags"].get("preserve_thinking"):
+                return
             # Reasoning content should not be included in the chat history
             response_data["model_responses_message_for_chat_history"] = {
                 "role": "assistant",

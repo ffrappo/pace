@@ -131,6 +131,9 @@ def _run_infobench(
             else:
                 bool_results.append(None)
         except Exception as e:
+            from evaluations.generation import generation_config
+            if generation_config() is not None:
+                raise
             print(f"Warning: eval call failed for question '{question}': {e}", file=sys.stderr)
             bool_results.append(None)
 

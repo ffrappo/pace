@@ -5,13 +5,27 @@ import os
 from pathlib import Path
 
 
+def json_value(value):
+    """Preserve authentic NumPy values; unsupported types remain errors."""
+    import numpy as np
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        converted = value.item()
+        if isinstance(converted, np.generic):
+            raise TypeError(f"NumPy dtype cannot be represented in JSON: {value.dtype}")
+        return converted
+    raise TypeError(f"Not JSON serializable: {type(value).__name__}")
+
+
 class ScoreJournal:
-    def __init__(self, directory, model, endpoint, selection):
+    def __init__(self, directory, model, endpoint, selection, output_label=None, generation=None):
         self.root = Path(directory)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.binding = {
             "model": model, "endpoint": endpoint,
             "selection_sha256": hashlib.sha256(Path(selection).read_bytes()).hexdigest(),
+            "output_label": output_label or model, "generation": generation,
         }
         binding = self.root / "binding.json"
         if binding.exists():
@@ -34,7 +48,7 @@ class ScoreJournal:
         self.path.chmod(0o600)
 
     def append(self, record):
-        self.log.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+        self.log.write(json.dumps(record, ensure_ascii=False, allow_nan=False, default=json_value) + "\n")
         self.log.flush()
         os.fsync(self.log.fileno())
         if record["status"] == "scored":

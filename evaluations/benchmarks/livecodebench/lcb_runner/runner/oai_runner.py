@@ -20,6 +20,12 @@ class OpenAIRunner(BaseRunner):
     def __init__(self, args, model):
         super().__init__(args, model)
         self.model_style = model.model_style
+        from evaluations.generation import generation_config
+        if generation_config() is not None:
+            if args.n != 1 or args.use_cache or args.multiprocess > 1:
+                raise ValueError("Explicit PACE LCB runner requires n=1, no unbound cache, in-process transport")
+            self.client_kwargs = {"model": args.model}
+            return
         if model.model_style == LMStyle.OpenAIReasonPreview:
             self.client_kwargs: dict[str | str] = {
                 "model": args.model,
@@ -55,6 +61,11 @@ class OpenAIRunner(BaseRunner):
 
     def _run_single(self, prompt: list[dict[str, str]], n: int = 10) -> list[str]:
         assert isinstance(prompt, list)
+        from evaluations.generation import generation_config
+        if generation_config() is not None:
+            from evaluations.handlers._compat import chat_completion
+            response = chat_completion(self.client, messages=prompt, **self.client_kwargs)
+            return [(c.message.content, response.model_dump_json()) for c in response.choices]
 
         if n == 0:
             print("Max retries reached. Returning empty response.")

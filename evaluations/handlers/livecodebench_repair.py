@@ -10,6 +10,8 @@ def _digest(path):
 
 
 def run_selfrepair(problem, idx, model_name, client, original_messages):
+    from evaluations.generation import generation_identity, generation_config, record_response
+    from evaluations.handlers._compat import chat_completion
     from lcb_runner.lm_styles import LMStyle
     from lcb_runner.prompts.self_repair import format_prompt_self_repair
     from lcb_runner.utils.extraction_utils import extract_code
@@ -25,6 +27,9 @@ def run_selfrepair(problem, idx, model_name, client, original_messages):
                'native_binding_blake3': _digest(binding),
                'handler_blake3': _digest(Path(__file__)),
                'initial_messages': original_messages, 'sample': problem.get_evaluation_sample()}
+    profile = generation_identity()
+    if profile is not None:
+        lineage['generation'] = profile
     identity = root / 'lineage.json'
     if identity.exists():
         if json.loads(identity.read_text()) != lineage:
@@ -38,9 +43,15 @@ def run_selfrepair(problem, idx, model_name, client, original_messages):
             response = json.loads(saved.read_text())
             if response['messages'] != messages:
                 raise RuntimeError('Original LCB retained generation prompt differs')
+            if profile is not None:
+                record_response(response['response'])
         else:
-            result = client.chat.completions.create(model=model_name, messages=messages,
-                                                   temperature=0, max_tokens=4096, timeout=7200)
+            if generation_config() is not None:
+                result = chat_completion(client, model=model_name, messages=messages,
+                                         temperature=0, max_tokens=4096, timeout=7200)
+            else:
+                result = client.chat.completions.create(model=model_name, messages=messages,
+                                                       temperature=0, max_tokens=4096, timeout=7200)
             response = {'messages': messages, 'response': result.model_dump(mode='json')}
             with saved.open('x') as file:
                 json.dump(response, file)

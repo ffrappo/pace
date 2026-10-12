@@ -348,6 +348,11 @@ class OpenAIChatCompletion(LocalChatCompletion):
             "chat-completions require the --apply_chat_template flag."
         )
 
+        from evaluations.generation import generation_config, request_configuration
+        if generation_config() is not None:
+            return request_configuration({**(gen_kwargs or {}),
+                                          "model": self.model, "messages": messages})
+
         # Strip "type" field from messages - non-standard field that some providers
         # (e.g., Fireworks AI) reject. Safe for all providers as it's not part of OpenAI spec.
         cleaned_messages = [

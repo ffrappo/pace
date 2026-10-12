@@ -61,6 +61,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 from evaluations.run import run_instance  # noqa: E402
 from evaluations._env import load_env  # noqa: E402
 from evaluations.score_journal import ScoreJournal  # noqa: E402
+from evaluations.generation import (configure_generation, begin_transport, end_transport,
+                                    retain_transport, GenerationFailure)  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 _STD = _REPO / "results" / "standardized_results"
@@ -215,18 +217,27 @@ def _run_bfcl_subprocess(model, base_url, api_key, subtask, instance_id):
     )
     if proc.returncode != 0:
         detail = proc.stdout.strip()
+        raw_result = None
         try:                       # runner reports failures as a JSON error object
             err = json.loads(detail)
+            raw_result = err.get("raw_result")
+            for record in err.get("raw_transport", []):
+                retain_transport(record)
             detail = err.get("error") or err.get("traceback") or detail
         except (ValueError, TypeError):
             detail = detail or proc.stderr.strip()
-        raise RuntimeError(f"bfcl subprocess failed: {detail}")
+        raise GenerationFailure(f"bfcl subprocess failed: {detail}", raw_result)
     out = proc.stdout.strip()
     if not out:
         raise RuntimeError(
             f"bfcl subprocess produced no output (stderr: {proc.stderr.strip()[-500:]})"
         )
-    return json.loads(out)
+    result = json.loads(out)
+    if isinstance(result, dict) and "raw_transport" in result:
+        for record in result["raw_transport"]:
+            retain_transport(record)
+        return result["result"]
+    return result
 
 
 def main():
@@ -243,10 +254,15 @@ def main():
     ap.add_argument("--workers", type=int, default=8,
                     help="concurrent API calls (default 8; unsafe handlers stay serialized)")
     ap.add_argument("--journal-dir", type=Path, help="durable raw observations and resume binding")
+    ap.add_argument("--generation-config", default=os.environ.get("PACE_GENERATION_CONFIG"),
+                    help="opt-in generation JSON, inherited by BFCL subprocesses")
     args = ap.parse_args()
     if not args.api_key:
         ap.error("set --api-key or export API_KEY")
     out_name = args.model_name_out or args.model
+    generation = configure_generation(args.generation_config, args.model)
+    if generation is not None and args.journal_dir is None:
+        ap.error("explicit generation requires --journal-dir for bound raw results and resume")
 
     rows = list(csv.DictReader(open(args.selections)))
     if args.limit:
@@ -277,7 +293,8 @@ def main():
         out_csv = (_STD / b / subdir if subdir else _STD / b) / f"{out_name}.csv"
         return out_csv.exists() and str(iid) in _load_existing(out_csv)
 
-    journal = ScoreJournal(args.journal_dir, args.model, args.base_url, args.selections) \
+    journal = ScoreJournal(args.journal_dir, args.model, args.base_url, args.selections,
+                           out_name, generation) \
         if args.journal_dir is not None else None
     if journal is not None:
         restored = defaultdict(list)
@@ -313,15 +330,16 @@ def main():
     def run_one(key):
         b, subtask, call_iid = key
         started = time.monotonic()
+        token = begin_transport()
         try:
             if b in SERIAL_BENCHMARKS:   # not thread-safe (chdir / global state / env)
                 with serial_lock:
                     r = _call(b, subtask, call_iid)
             else:
                 r = _call(b, subtask, call_iid)
-            return key, r, None, time.monotonic() - started
+            return key, r, None, time.monotonic() - started, end_transport(token)
         except Exception as e:
-            return key, None, e, time.monotonic() - started
+            return key, getattr(e, "raw_result", None), e, time.monotonic() - started, end_transport(token)
 
     written = defaultdict(list)   # (benchmark, subdir) -> [(id, score, metric)]
     total = len(rows_by_key)
@@ -329,7 +347,7 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futs = [pool.submit(run_one, k) for k in rows_by_key]
         for fut in as_completed(futs):
-            key, result, err, elapsed = fut.result()
+            key, result, err, elapsed, transport = fut.result()
             done += 1
             scores = []
             try:
@@ -346,11 +364,11 @@ def main():
                                        metric=metric, score=score))
                 if journal is not None:
                     journal.append(dict(status='scored', call=key, elapsed_seconds=elapsed,
-                                        scores=scores, raw_result=result))
+                                        scores=scores, raw_result=result, raw_transport=transport))
             except Exception as failure:
                 if journal is not None:
                     journal.append(dict(status='failed', call=key, elapsed_seconds=elapsed,
-                                        error=str(failure), raw_result=result))
+                                        error=str(failure), raw_result=result, raw_transport=transport))
                     journal.close()
                 for pending in futs:
                     pending.cancel()

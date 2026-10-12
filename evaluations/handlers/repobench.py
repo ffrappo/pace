@@ -109,7 +109,11 @@ def _run_repobench(
 
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.chat.completions.create(
+    from evaluations.handlers._compat import chat_completion
+    from evaluations.generation import generation_config
+    create = (lambda **kwargs: chat_completion(client, **kwargs)) if generation_config() is not None \
+        else client.chat.completions.create
+    response = create(
         model=model_name,
         messages=[
             {

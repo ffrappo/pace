@@ -53,6 +53,19 @@ def chat_completion(client, *, reasoning_budget_retry=True, **kwargs):
     - If the reply is empty because the token budget was exhausted by reasoning,
       retries once with an enlarged max_tokens / max_completion_tokens budget.
     """
+    from evaluations.generation import (generation_config, request_configuration,
+                                        record_response, record_error, GenerationFailure)
+    if generation_config() is not None:
+        kwargs = request_configuration(kwargs, sdk=True)
+        # The explicit contract is one attempt, including transport retries.
+        kwargs["timeout"] = 14400
+        try:
+            response = client.with_options(max_retries=0).chat.completions.create(**kwargs)
+        except Exception as exc:
+            raw = record_error(exc)
+            # Preserve the original error while preventing upstream rate-limit decorators.
+            raise GenerationFailure(str(exc), raw) from exc
+        return record_response(response)
     response = _create_with_temperature_fallback(client, **kwargs)
 
     if reasoning_budget_retry and _truncated_empty(response):

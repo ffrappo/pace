@@ -477,8 +477,17 @@ class TemplateAPI(TemplateLM):
         )
         if not response.ok:
             eval_logger.error(f"API request failed: {response.text}")
-        response.raise_for_status()
-        return response.json()
+        from evaluations.generation import generation_config, record_response, record_error
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            if generation_config() is not None:
+                record_error(exc)
+            raise
+        result = response.json()
+        if generation_config() is not None:
+            record_response(result)
+        return result
 
     async def amodel_call(
         self,

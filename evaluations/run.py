@@ -259,7 +259,11 @@ def main():
                         help="Optional subtask name, e.g. onedoc-qa")
     parser.add_argument("--instance_id", type=str, default="0",
                         help="Instance id in standardized_results format (default: 0)")
+    parser.add_argument("--generation-config", default=os.environ.get("PACE_GENERATION_CONFIG"),
+                        help="opt-in generation JSON used by actual request producers")
     args = parser.parse_args()
+    from evaluations.generation import configure_generation
+    configure_generation(args.generation_config, args.model_name)
 
     if not args.api_key:
         parser.error("no API key: pass --api_key, export API_KEY, or set it in .env")

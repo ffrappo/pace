@@ -113,6 +113,22 @@ class LiteLLMResponser(Responser):
             {"role": "user", "content": user_prompt}
         ]
 
+        from evaluations.generation import (generation_config, request_configuration,
+                                            record_response, record_error)
+        if generation_config() is not None:
+            kwargs = request_configuration({"model": self.model.removeprefix("openai/"),
+                                            "messages": messages}, sdk=True)
+            kwargs["model"] = "openai/" + kwargs["model"]
+            try:
+                response = self.litellm.completion(
+                    api_key=self.api_key, base_url=self.base_url,
+                    num_retries=0, max_retries=0, drop_params=False, timeout=14400, **kwargs)
+            except Exception as exc:
+                record_error(exc)
+                raise
+            record_response(response)
+            return self._extract_content(response)
+
         try:
             response = self.litellm.completion(
                 api_key=self.api_key,

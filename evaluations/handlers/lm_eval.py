@@ -84,7 +84,16 @@ def _run_lm_eval(
     is_reasoning = any(kw in model_name.lower() for kw in ("thinking", "deepseek"))
     max_gen_toks = 32768 if is_reasoning else 16384
 
+    from evaluations.generation import generation_config
+    config = generation_config()
     disable_seed = "disable_seed=true"
+    profile_args = ""
+    if config is not None:
+        max_gen_toks = config["request"]["max_tokens"]
+        disable_seed = "disable_seed=false"
+        profile_args = (f",seed={config['request']['seed']},tokenizer_backend=None,"
+                        f"tokenized_requests=false,truncate=false,"
+                        f"max_length={config['context_tokens']},max_gen_toks={max_gen_toks}")
     doc_id = standardized_id_to_doc_id(benchmark, subtask, instance_id)
 
     os.environ["OPENAI_API_KEY"] = api_key
@@ -104,8 +113,8 @@ def _run_lm_eval(
             model_args=(
                 f"model={model_name},"
                 f"base_url={chat_completions_url},"
-                f"num_concurrent=1,max_retries=1,timeout=7200,"
-                f"{disable_seed}"
+                f"num_concurrent=1,max_retries=1,timeout={14400 if config is not None else 7200},"
+                f"{disable_seed}{profile_args}"
             ),
             tasks=[subtask],
             samples={subtask: [doc_id]},

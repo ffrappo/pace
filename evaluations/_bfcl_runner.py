@@ -73,6 +73,9 @@ def _parse_inputs() -> dict:
 
 
 def main() -> None:
+    from evaluations.generation import (generation_config, begin_transport, end_transport)
+    from evaluations.score_journal import json_value
+    token = begin_transport()
     try:
         params = _parse_inputs()
         # Imported lazily and only after inputs validate: pulls in bfcl_eval, which
@@ -96,17 +99,19 @@ def main() -> None:
             {
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(),
+                "raw_result": getattr(exc, "raw_result", None),
+                "raw_transport": end_transport(token),
             },
-            sys.stdout,
+            sys.stdout, allow_nan=False, default=json_value,
         )
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(1)
 
-    # `result` embeds model_result_raw / metadata that may hold non-JSON types;
-    # default=str keeps serialization total without losing scalar fields like
-    # 'valid' that score_new_model.extract() reads.
-    json.dump(result, sys.stdout, default=str)
+    transport = end_transport(token)
+    if generation_config() is not None:
+        result = {"result": result, "raw_transport": transport}
+    json.dump(result, sys.stdout, allow_nan=False, default=json_value)
     sys.stdout.write("\n")
     sys.stdout.flush()
 
