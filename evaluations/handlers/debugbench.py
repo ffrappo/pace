@@ -81,27 +81,36 @@ def _run_debugbench(
     result["test_result_bool"] = None
     result["test_result_dict"] = None
 
-    try:
+    grader_url = os.environ.get('PACE_DEBUGBENCH_GRADER_URL')
+    if grader_url:
+        import pathlib
+        import urllib.request
+        if grader_url != 'http://127.0.0.1:8771/debugbench':
+            raise ValueError('Original local grader must be SSH-bound loopback')
+        token = pathlib.Path(os.environ['PACE_DEBUGBENCH_GRADER_TOKEN']).read_text().strip()
+        request = {'code': fixed_code, 'language': lang, 'task_id': slug}
+        query = urllib.request.Request(grader_url, data=json.dumps(request).encode(),
+                                       headers={'Content-Type': 'application/json',
+                                                'Authorization': 'Bearer ' + token})
+        with urllib.request.urlopen(query, timeout=180) as response:
+            graded = json.load(response)
+        if graded['request'] != request or graded['grader'] != 'original_debugbench_leetcode_oj.LeetCodeTester':
+            raise RuntimeError('Original DebugBench grader request/owner differs')
+        from evaluations.generation import retain_transport
+        retain_transport({'original_debugbench_grader': graded})
+        result['test_result_bool'] = graded['test_result_bool']
+        result['test_result_dict'] = graded['test_result_dict']
+    else:
         from leetcode_oj import LeetCodeTester
         with open(DEBUGBENCH_KEYS_FILE) as f:
             keys = json.load(f)
         first_key = keys[0] if keys else {}
-        session = first_key.get("leetcode_session", "")
-        csrf = first_key.get("csrf_token", "")
-        if session and not session.startswith("<") and csrf and not csrf.startswith("<"):
-            tester = LeetCodeTester(leetcode_session=session, csrf_token=csrf, cooldown=25)
-            test_result_bool, test_result_dict = tester.test(
-                code=fixed_code, language=lang, task_id=slug
-            )
-            result["test_result_bool"] = test_result_bool
-            result["test_result_dict"] = test_result_dict
-        else:
-            print(
-                "Warning: LeetCode credentials in keys.json appear to be placeholders. "
-                "Skipping OJ test; test_result_bool/dict will be None.",
-                file=sys.stderr,
-            )
-    except Exception as e:
-        print(f"Warning: LeetCode OJ test failed: {e}", file=sys.stderr)
+        session = first_key.get('leetcode_session', '')
+        csrf = first_key.get('csrf_token', '')
+        if not session or session.startswith('<') or not csrf or csrf.startswith('<'):
+            raise RuntimeError('Original DebugBench LeetCode credentials are missing')
+        tester = LeetCodeTester(leetcode_session=session, csrf_token=csrf, cooldown=25)
+        result['test_result_bool'], result['test_result_dict'] = tester.test(
+            code=fixed_code, language=lang, task_id=slug)
 
     return [result]
