@@ -55,7 +55,7 @@ class JournalCustody:
         headers = {"Content-Type": self._content_type} if method == "PUT" else {}
         try:
             request = Request(url, data=data, headers=headers, method=method)
-            with self._http.open(request, timeout=30) as response:
+            with self._http.open(request, timeout=120) as response:
                 if not 200 <= response.status < 300:
                     raise CustodyError(f"PACE custody {method} HTTP {response.status}")
                 return response.read() if method == "GET" else b""
