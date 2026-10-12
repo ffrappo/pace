@@ -37,7 +37,8 @@ echo "== [2/3] BFCL venv: $BFCL_VENV =="
 "$BFCL_VENV/bin/python" -m pip install \
     "openai>=1.86.0" "tree-sitter==0.21.3" "tree-sitter-java==0.21.0" \
     "tree-sitter-javascript==0.21.4" pydantic numpy pandas tqdm tabulate \
-    huggingface_hub tenacity overrides python-dotenv
+    huggingface_hub tenacity overrides python-dotenv \
+    requests beautifulsoup4 html2text google-search-results
 
 echo "== [3/3] VAL plan validator (planbench grading) =="
 # planbench grades non-verification tasks with VAL. Downloads a Linux64 build to

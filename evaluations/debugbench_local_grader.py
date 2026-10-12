@@ -87,10 +87,23 @@ def main():
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError) as error:
+                    print('ORIGINAL_GRADER_DELIVERY_FAILED_AFTER_COMMIT', type(error).__name__, flush=True)
+                    return
                 print('ORIGINAL_DEBUGBENCH_GRADED', request['task_id'], record['test_result_bool'], flush=True)
             except Exception as error:
-                print('ORIGINAL_DEBUGBENCH_GRADER_FAILED', type(error).__name__, flush=True)
+                import time
+                raw = getattr(error, 'body', None)
+                failure = {'type': type(error).__name__, 'status': getattr(error, 'status', None),
+                           'reason': getattr(error, 'reason', None), 'body': str(raw) if raw is not None else None}
+                path = args.outputs / ('FAILED-' + str(time.time_ns()) + '.json')
+                with path.open('x') as file:
+                    json.dump(failure, file, allow_nan=False)
+                    file.flush()
+                    os.fsync(file.fileno())
+                print('ORIGINAL_PROVIDER_FAILED', type(error).__name__, failure['status'], flush=True)
                 self.send_error(500, type(error).__name__)
 
     print('ORIGINAL_DEBUGBENCH_LOCAL_CPU_READY', args.port, flush=True)
