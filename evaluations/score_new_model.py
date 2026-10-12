@@ -52,6 +52,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -59,6 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 from evaluations.run import run_instance  # noqa: E402
 from evaluations._env import load_env  # noqa: E402
+from evaluations.score_journal import ScoreJournal  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 _STD = _REPO / "results" / "standardized_results"
@@ -240,6 +242,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="only process the first N rows (debug)")
     ap.add_argument("--workers", type=int, default=8,
                     help="concurrent API calls (default 8; unsafe handlers stay serialized)")
+    ap.add_argument("--journal-dir", type=Path, help="durable raw observations and resume binding")
     args = ap.parse_args()
     if not args.api_key:
         ap.error("set --api-key or export API_KEY")
@@ -274,14 +277,25 @@ def main():
         out_csv = (_STD / b / subdir if subdir else _STD / b) / f"{out_name}.csv"
         return out_csv.exists() and str(iid) in _load_existing(out_csv)
 
+    journal = ScoreJournal(args.journal_dir, args.model, args.base_url, args.selections) \
+        if args.journal_dir is not None else None
+    if journal is not None:
+        restored = defaultdict(list)
+        for record in journal.records.values():
+            for score in record['scores']:
+                restored[(score['benchmark'], score['subdir'])].append(
+                    (score['instance_id'], score['score'], score['metric']))
+        flush(restored)
+
     # Group rows by unique API call (dedup: repobench's metric rows share one call).
     rows_by_key = defaultdict(list)
     for row in rows:
         b, subdir, iid = row["benchmark"], row["subdir"], row["instance_id"]
-        if already_done(b, subdir, iid):
-            continue
         subtask, call_iid = eval_call(b, subdir, iid)
-        rows_by_key[(b, subtask, call_iid)].append((b, subdir, iid))
+        key = (b, subtask, call_iid)
+        if journal.done(key) if journal is not None else already_done(b, subdir, iid):
+            continue
+        rows_by_key[key].append((b, subdir, iid))
 
     serial_lock = threading.Lock()
 
@@ -298,55 +312,60 @@ def main():
 
     def run_one(key):
         b, subtask, call_iid = key
+        started = time.monotonic()
         try:
             if b in SERIAL_BENCHMARKS:   # not thread-safe (chdir / global state / env)
                 with serial_lock:
                     r = _call(b, subtask, call_iid)
             else:
                 r = _call(b, subtask, call_iid)
-            return key, r, None
+            return key, r, None, time.monotonic() - started
         except Exception as e:
-            return key, None, e
+            return key, None, e, time.monotonic() - started
 
     written = defaultdict(list)   # (benchmark, subdir) -> [(id, score, metric)]
-    skipped = defaultdict(int)
-    errors = defaultdict(int)
     total = len(rows_by_key)
     done = 0
-    # Workers do only the (I/O-bound) API calls; extraction + CSV writes stay on
-    # the main thread here, so no locking is needed for `written`/flush.
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futs = [pool.submit(run_one, k) for k in rows_by_key]
         for fut in as_completed(futs):
-            key, result, err = fut.result()
+            key, result, err, elapsed = fut.result()
             done += 1
-            b = key[0]
-            if err is not None:
-                errors[b] += 1
-                print(f"[{done}/{total}] ERROR {b}/{key[2]}: {err}", file=sys.stderr, flush=True)
-                continue
-            if result is None:
-                continue
-            for (bb, subdir, iid) in rows_by_key[key]:
-                ex = extract(bb, subdir, result)
-                if ex is None or ex[1] is None:
-                    skipped[bb] += 1
-                    continue
-                metric, score = ex
-                written[(bb, subdir)].append((iid, score, metric))
-                print(f"[{done}/{total}] {bb}/{subdir}/{iid} -> {metric}={score}", flush=True)
-            if done % 15 == 0:        # incremental flush: crash-safe + resumable
+            scores = []
+            try:
+                if err is not None:
+                    raise err
+                if result is None:
+                    raise RuntimeError(f'PACE handler returned no result for {key}')
+                for (bb, subdir, iid) in rows_by_key[key]:
+                    ex = extract(bb, subdir, result)
+                    if ex is None or ex[1] is None:
+                        raise RuntimeError(f'PACE grader returned no grade for {(bb, subdir, iid)}')
+                    metric, score = ex
+                    scores.append(dict(benchmark=bb, subdir=subdir, instance_id=iid,
+                                       metric=metric, score=score))
+                if journal is not None:
+                    journal.append(dict(status='scored', call=key, elapsed_seconds=elapsed,
+                                        scores=scores, raw_result=result))
+            except Exception as failure:
+                if journal is not None:
+                    journal.append(dict(status='failed', call=key, elapsed_seconds=elapsed,
+                                        error=str(failure), raw_result=result))
+                    journal.close()
+                for pending in futs:
+                    pending.cancel()
                 flush(written)
-                written = defaultdict(list)
-
-    flush(written)               # final flush
-
-    print(f"\nWrote scores to CSVs under {_STD}/<benchmark>/.../{out_name}.csv")
-    if skipped:
-        print("Skipped (unscorable, e.g. planbench needs VAL): " +
-              ", ".join(f"{k}={v}" for k, v in skipped.items()))
-    if errors:
-        print("Errors: " + ", ".join(f"{k}={v}" for k, v in errors.items()))
+                raise
+            for s in scores:
+                written[(s['benchmark'], s['subdir'])].append(
+                    (s['instance_id'], s['score'], s['metric']))
+                print(f"[{done}/{total}] {s['benchmark']}/{s['subdir']}/{s['instance_id']} -> "
+                      f"{s['metric']}={s['score']}", flush=True)
+            flush(written)
+            written = defaultdict(list)
+    if journal is not None:
+        journal.close()
+    print(f"Wrote scores to CSVs under {_STD}/<benchmark>/.../{out_name}.csv")
 
 
 if __name__ == "__main__":

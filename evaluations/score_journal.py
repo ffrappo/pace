@@ -1,0 +1,47 @@
+"""Durable observations for the existing PACE scorer, not an alternate grader."""
+import hashlib
+import json
+import os
+from pathlib import Path
+
+
+class ScoreJournal:
+    def __init__(self, directory, model, endpoint, selection):
+        self.root = Path(directory)
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.binding = {
+            "model": model, "endpoint": endpoint,
+            "selection_sha256": hashlib.sha256(Path(selection).read_bytes()).hexdigest(),
+        }
+        binding = self.root / "binding.json"
+        if binding.exists():
+            if json.loads(binding.read_text()) != self.binding:
+                raise RuntimeError("PACE resume binding differs from the original run")
+        else:
+            binding.write_text(json.dumps(self.binding, indent=2) + "\n")
+            binding.chmod(0o600)
+        self.path = self.root / "observations.jsonl"
+        self.records = {}
+        if self.path.exists():
+            for line in self.path.read_text().splitlines():
+                record = json.loads(line)
+                if record["status"] == "scored":
+                    key = tuple(record["call"])
+                    if key in self.records:
+                        raise RuntimeError(f"Duplicate PACE observation: {key}")
+                    self.records[key] = record
+        self.log = self.path.open("a")
+        self.path.chmod(0o600)
+
+    def append(self, record):
+        self.log.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+        self.log.flush()
+        os.fsync(self.log.fileno())
+        if record["status"] == "scored":
+            self.records[tuple(record["call"])] = record
+
+    def done(self, call):
+        return tuple(call) in self.records
+
+    def close(self):
+        self.log.close()
