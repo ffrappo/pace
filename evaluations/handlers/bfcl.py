@@ -149,7 +149,7 @@ def _run_bfcl(
         handler._pace_replay = SavedBFCLResponses(replay_record)
     else:
         handler = OpenAICompletionsHandler(**handler_kwargs)
-        handler.client = handler.client.with_options(timeout=14400.0, max_retries=0)
+        handler.client = handler.client.with_options(timeout=86400.0, max_retries=0)
         handler.generate_with_backoff = handler.generate_with_backoff.__wrapped__.__get__(handler)
 
     all_entries = load_dataset_entry(

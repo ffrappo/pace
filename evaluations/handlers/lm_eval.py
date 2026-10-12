@@ -113,7 +113,7 @@ def _run_lm_eval(
             model_args=(
                 f"model={model_name},"
                 f"base_url={chat_completions_url},"
-                f"num_concurrent=1,max_retries=1,timeout={14400 if config is not None else 7200},"
+                f"num_concurrent=1,max_retries=1,timeout={86400 if config is not None else 7200},"
                 f"{disable_seed}{profile_args}"
             ),
             tasks=[subtask],

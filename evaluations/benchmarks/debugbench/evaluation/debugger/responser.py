@@ -122,7 +122,7 @@ class LiteLLMResponser(Responser):
             try:
                 response = self.litellm.completion(
                     api_key=self.api_key, base_url=self.base_url,
-                    num_retries=0, max_retries=0, drop_params=False, timeout=14400, **kwargs)
+                    num_retries=0, max_retries=0, drop_params=False, timeout=86400, **kwargs)
             except Exception as exc:
                 record_error(exc)
                 raise

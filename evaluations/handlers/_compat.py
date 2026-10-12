@@ -58,7 +58,7 @@ def chat_completion(client, *, reasoning_budget_retry=True, **kwargs):
     if generation_config() is not None:
         kwargs = request_configuration(kwargs, sdk=True)
         # The explicit contract is one attempt, including transport retries.
-        kwargs["timeout"] = 14400
+        kwargs["timeout"] = 86400
         try:
             response = client.with_options(max_retries=0).chat.completions.create(**kwargs)
         except Exception as exc:
